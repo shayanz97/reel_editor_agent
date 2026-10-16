@@ -59,11 +59,12 @@ def build_words(raw: Sequence[RawWord]) -> list[Word]:
     """Assign ids 0..n-1 and repair timings so that words are ordered and non-overlapping.
 
     - Empty tokens are dropped.
+    - Hyphen fragments split off by the engine are re-joined ("S" + "-Tier," -> "S-Tier,").
     - Missing times are interpolated between the neighbouring known times; at the edges
       they collapse onto the nearest known time (so no extra silence is protected).
     - Overlaps between consecutive words are resolved by moving the later start.
     """
-    items = [r for r in raw if r.text.strip()]
+    items = merge_hyphen_fragments([r for r in raw if r.text.strip()])
     starts = _interpolate([r.start for r in items], [r.end for r in items])
     words: list[Word] = []
     prev_end = 0.0
@@ -73,6 +74,39 @@ def build_words(raw: Sequence[RawWord]) -> list[Word]:
         words.append(Word(id=i, text=r.text.strip(), start=start, end=end, score=r.score))
         prev_end = end
     return words
+
+
+# "-Tier", "-Prozess": a hyphen directly followed by a letter or digit. A lone "-" or a
+# dash used as punctuation ("–") is not a fragment.
+_HYPHEN_FRAGMENT = re.compile(r"^-\w", re.UNICODE)
+_NO_JOIN_AFTER = (".", "!", "?", "…", ",", ";", ":", "–", "-")
+
+
+def merge_hyphen_fragments(raw: Sequence[RawWord]) -> list[RawWord]:
+    """Join words that start with a hyphen onto the previous word.
+
+    Whisper's word timestamps (mlx-whisper) split compounds like "S-Tier" into "S" and
+    "-Tier". The fragment is joined unless the previous word ends a sentence or clause.
+    """
+    merged: list[RawWord] = []
+    for r in raw:
+        text = r.text.strip()
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and _HYPHEN_FRAGMENT.match(text)
+            and not prev.text.rstrip().endswith(_NO_JOIN_AFTER)
+        ):
+            scores = [s for s in (prev.score, r.score) if s is not None]
+            merged[-1] = RawWord(
+                text=prev.text.strip() + text,
+                start=prev.start if prev.start is not None else r.start,
+                end=r.end if r.end is not None else prev.end,
+                score=min(scores) if scores else None,
+            )
+        else:
+            merged.append(r)
+    return merged
 
 
 def _interpolate(

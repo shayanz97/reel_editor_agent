@@ -63,3 +63,36 @@ def test_display_text_uses_overlay() -> None:
     assert display_text(w) == "Cuber"
     assert display_text(w, {3: "Kubernetes"}) == "Kubernetes"
     assert display_text(w, {3: ""}) == ""
+
+
+def test_hyphen_fragments_are_joined() -> None:
+    ws = build_words(
+        [
+            RawWord(text=" S", start=1.0, end=1.1, score=0.9),
+            RawWord(text=" -Tier,", start=1.15, end=1.5, score=0.7),
+            RawWord(text=" würde", start=1.6, end=1.8),
+        ]
+    )
+    assert [w.text for w in ws] == ["S-Tier,", "würde"]
+    assert [w.id for w in ws] == [0, 1]
+    assert (ws[0].start, ws[0].end, ws[0].score) == (1.0, 1.5, 0.7)
+
+
+def test_hyphen_fragment_with_missing_times_keeps_known_ones() -> None:
+    (w,) = build_words([RawWord(text="C", start=2.0, end=2.1), RawWord(text="-Tier.")])
+    assert (w.text, w.start, w.end) == ("C-Tier.", 2.0, 2.1)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        [("Ende.", 0, 1), ("-Tier", 1, 2)],  # after sentence end
+        [("und,", 0, 1), ("-Tier", 1, 2)],  # after clause mark
+        [("Wort", 0, 1), ("-", 1, 2)],  # lone hyphen
+        [("Wort", 0, 1), ("–", 1, 2)],  # dash as punctuation
+        [("-Tier", 0, 1)],  # nothing before
+    ],
+)
+def test_hyphen_not_joined(spec: list[tuple[str, float, float]]) -> None:
+    ws = build_words([RawWord(text=t, start=s, end=e) for t, s, e in spec])
+    assert len(ws) == len(spec)
