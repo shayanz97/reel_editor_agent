@@ -1,0 +1,26 @@
+# Runtime data (originals, versions, Telegram files)
+data/
+
+# Secrets
+.env
+
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Generated test media
+tests/fixtures/generated/
+
+.DS_Store
+.venv-uv/
+
+# Local FFmpeg binaries (not part of the repo)
+/ffmpeg
+/ffprobe
