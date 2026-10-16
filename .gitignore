@@ -19,7 +19,6 @@ build/
 tests/fixtures/generated/
 
 .DS_Store
-.venv-uv/
 
 # Local FFmpeg binaries (not part of the repo)
 /ffmpeg

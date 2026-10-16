@@ -89,5 +89,14 @@ Lauf 1 enthält das Herunterladen bzw. Laden der Modelle, Lauf 2 zeigt die reine
 Ergebnisse unverändert übernehmen (keine geschätzten Zahlen). Danach Standard-Engine in
 `.env.example` (`TRANSCRIBE_ENGINE`) festlegen und die Entscheidung hier begründen:
 
-- Entscheidung: …
-- Begründung (Laufzeit, Textqualität, Wortgrenzen): …
+- Entscheidung: **mlx** (`mlx-community/whisper-large-v3-turbo`), Stand 2026-10-16.
+- Begründung (Laufzeit, Textqualität, Wortgrenzen):
+  - Laufzeit: 5,6 s statt 21,3 s für 32 s Audio (zweiter Lauf, Messung in
+    [benchmark.md](benchmark.md)), also etwa 4× schneller.
+  - Text: mlx erkennt „Wege zur ersten Million“ richtig, WhisperX schreibt „zu ersten Millionen“.
+    Die einzige mlx-Schwäche (abgetrennte Bindestriche wie „S -Tier“) wird beim Bereinigen der
+    Wörter automatisch korrigiert.
+  - Sichtvergleich beider Exporte desselben Videos: mlx wirkt bei Untertitel-Sync und Schnitten
+    spürbar besser.
+  - Einschränkung: bisher ein einziges Video (32 s). Im Qualitätstest mit 10 Videos weiter prüfen;
+    WhisperX bleibt per `--engine whisperx` verfügbar.

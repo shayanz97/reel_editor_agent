@@ -15,13 +15,12 @@ Umsetzungsstand: [TASKS.md](TASKS.md).
 ffmpeg -hide_banner -filters | grep subtitles   # muss eine Zeile "subtitles" zeigen
 ```
 
-**uv** wird ohne Homebrew in einer kleinen Bootstrap-venv installiert (`.venv-uv`, gitignored).
+**uv** (ohne Homebrew) mit dem offiziellen Installer von Astral; landet in `~/.local/bin`.
 uv lädt Python 3.12 selbst herunter und legt die Projekt-venv `.venv` an:
 
 ```bash
-python3 -m venv .venv-uv
-.venv-uv/bin/pip install uv
-export PATH="$PWD/.venv-uv/bin:$PATH"   # danach funktionieren alle `uv …`-Befehle unten
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv --version
 ```
 
 Docker: [Docker Desktop für Mac](https://www.docker.com/products/docker-desktop/) installieren
