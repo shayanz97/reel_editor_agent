@@ -38,7 +38,14 @@ class Settings(BaseSettings):
     pexels_api_key: SecretStr | None = None
 
     data_dir: Path = Path("data")
+    fonts_dir: Path = Path("assets/fonts")
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+
     transcribe_engine: Literal["whisperx", "mlx"] = "whisperx"
+    whisperx_model: str = "large-v3-turbo"
+    whisperx_batch_size: int = 8
+    mlx_whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     log_level: str = "INFO"
     log_format: Literal["json", "text"] = "text"
 

@@ -4,7 +4,7 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 0**
+Status: **Etappe 1** (Etappe 0 fertig bis auf den Start des Bot-API-Servers: wartet auf Telegram-Zugangsdaten)
 
 ---
 
@@ -34,21 +34,21 @@ Status: **Etappe 0**
 
 **Ziel:** `uv run reels process video.mp4 --client demo` erzeugt ein fertiges Reel. Kein Bot, keine Queue.
 
-- [ ] 1.1 `media/probe.py`: Dauer, Auflösung, fps, Rotation, Ausrichtung. Ablehnung über `max_duration_s`
-- [ ] 1.2 `media/audio.py`: Mono-WAV 16 kHz extrahieren
-- [ ] 1.3 `transcribe/base.py` (Protokoll, liefert `list[Word]` mit stabilen IDs), `whisperx_engine.py` (CPU, int8, mit Alignment), `mlx_engine.py` (Wort-Zeitstempel), Fake-Engine für Tests
-- [ ] 1.4 Hinweistext aus dem Wörterbuch für die Transkription (bestätigte Begriffe, längenbegrenzt)
-- [ ] 1.5 `domain/glossary.py`: deterministische Variantenersetzung (wortgrenzen-sicher, mehrwortfähig, Zähler `hits`) + `reels glossary import/export` (CSV)
-- [ ] 1.6 `vad/silero.py`: Sprachbereiche
-- [ ] 1.7 `domain/cutplan.py`: Schnittplan aus VAD + Wortgrenzen, Pausen kürzen, Puffer, Füllwörter (nur wenn im Transkript), nie innerhalb eines Wortes schneiden
-- [ ] 1.8 `domain/timeline.py`: Abbildung Original → Ausgabe, inkl. Tests für Randfälle
-- [ ] 1.9 `domain/segments.py`: Segmentierung in Sätze/Sinneinheiten, deterministische Nummerierung
-- [ ] 1.10 `domain/subtitles.py` + `media/ass.py`: Gruppen (max. `subtitle.max_words`, möglichst einzeilig), Hervorhebungen, Karaoke-Option (`\k`-Tags), Position im unteren Drittel, Schrift aus `assets/fonts/`, Golden-File-Tests
-- [ ] 1.11 Hervorhebungen über die LLM-Schicht: `llm/base.py`, `openai_provider.py`, Schema `HighlightPlan`, Prompt in `llm/prompts/highlights.md`. Fallback ohne LLM: keine Hervorhebungen
-- [ ] 1.12 `media/render.py`: Schnitt mit `trim`/`atrim`/`concat`, Audio-Fades, abwechselnder Zoom, Mitten-Crop bei Querformat, `loudnorm`, Untertitel zuletzt, Export nach Spezifikation
-- [ ] 1.13 `cli.py`: `reels process` schreibt alle Zwischenstände in `data/clients/<id>/projects/<id>/v1/` und gibt eine Zusammenfassung aus (Originaldauer, neue Dauer, Anzahl Schnitte, Laufzeit pro Schritt)
-- [ ] 1.14 `reels bench-transcribe`: beide Engines auf dasselbe Video, Ausgabe von Laufzeit, Wortanzahl, Abweichung der Wortgrenzen zwischen den Engines und eine Textgegenüberstellung
-- [ ] 1.15 Qualitätstest-Protokoll `docs/quality-test.md` vorbereiten (Checkliste pro Video, siehe Abnahme)
+- [x] 1.1 `media/probe.py`: Dauer, Auflösung, fps, Rotation, Ausrichtung. Ablehnung über `max_duration_s`
+- [x] 1.2 `media/audio.py`: Mono-WAV 16 kHz extrahieren
+- [ ] 1.3 `transcribe/base.py` (Protokoll, liefert `list[Word]` mit stabilen IDs), `whisperx_engine.py` (CPU, int8, mit Alignment), `mlx_engine.py` (Wort-Zeitstempel), Fake-Engine für Tests — *Code + Fake fertig, Echtlauf der Modelle steht aus*
+- [x] 1.4 Hinweistext aus dem Wörterbuch für die Transkription (bestätigte Begriffe, längenbegrenzt)
+- [x] 1.5 `domain/glossary.py`: deterministische Variantenersetzung (wortgrenzen-sicher, mehrwortfähig, Zähler `hits`) + `reels glossary import/export` (CSV)
+- [x] 1.6 `vad/silero.py`: Sprachbereiche
+- [x] 1.7 `domain/cutplan.py`: Schnittplan aus VAD + Wortgrenzen, Pausen kürzen, Puffer, Füllwörter (nur wenn im Transkript), nie innerhalb eines Wortes schneiden
+- [x] 1.8 `domain/timeline.py`: Abbildung Original → Ausgabe, inkl. Tests für Randfälle
+- [x] 1.9 `domain/segments.py`: Segmentierung in Sätze/Sinneinheiten, deterministische Nummerierung
+- [x] 1.10 `domain/subtitles.py` + `media/ass.py`: Gruppen (max. `subtitle.max_words`, möglichst einzeilig), Hervorhebungen, Karaoke-Option (`\k`-Tags), Position im unteren Drittel, Schrift aus `assets/fonts/`, Golden-File-Tests
+- [x] 1.11 Hervorhebungen über die LLM-Schicht: `llm/base.py`, `openai_provider.py`, Schema `HighlightPlan`, Prompt in `llm/prompts/highlights.md`. Fallback ohne LLM: keine Hervorhebungen
+- [x] 1.12 `media/render.py`: Schnitt mit `trim`/`atrim`/`concat`, Audio-Fades, abwechselnder Zoom, Mitten-Crop bei Querformat, `loudnorm`, Untertitel zuletzt, Export nach Spezifikation
+- [x] 1.13 `cli.py`: `reels process` schreibt alle Zwischenstände in `data/clients/<id>/projects/<id>/v1/` und gibt eine Zusammenfassung aus (Originaldauer, neue Dauer, Anzahl Schnitte, Laufzeit pro Schritt)
+- [ ] 1.14 `reels bench-transcribe`: beide Engines auf dasselbe Video, Ausgabe von Laufzeit, Wortanzahl, Abweichung der Wortgrenzen zwischen den Engines und eine Textgegenüberstellung — *Code fertig, Lauf mit echtem Video steht aus*
+- [x] 1.15 Qualitätstest-Protokoll `docs/quality-test.md` vorbereiten (Checkliste pro Video, siehe Abnahme)
 
 **Abnahme**
 - Synthetisches Testvideo: erwartete Stille-Abschnitte werden gekürzt, keine Schnittkante liegt innerhalb eines Wortes (automatisierter Test)

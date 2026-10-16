@@ -20,6 +20,9 @@ class SubtitleSettings(BaseModel):
     style: str = "neutral"
     karaoke: bool = False
     max_words: int = Field(default=4, ge=1)
+    # Groups longer than this are split so that a subtitle stays on one line.
+    max_chars: int = Field(default=22, ge=5)
+    accent_color: str = Field(default="#FFD60A", pattern=r"^#[0-9A-Fa-f]{6}$")
     # lower_third sits above the Instagram UI controls
     position: SubtitlePosition = "lower_third"
 

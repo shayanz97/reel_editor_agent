@@ -79,6 +79,25 @@ uv run reels client list
 
 Der Kunde bekommt die Default-Einstellungen aus `ClientSettings` (siehe CLAUDE.md, Abschnitt 5).
 
+## Pipeline ohne Bot (Etappe 1)
+
+```bash
+uv run reels glossary import demo begriffe.csv     # term,variants,category,note,highlight,status
+uv run reels process video.mp4 --client demo       # schreibt data/clients/<id>/projects/<id>/v1/
+uv run reels process video.mp4 --client demo --project 7 --karaoke   # neu rendern, Cache nutzen
+uv run reels bench-transcribe video.mp4 --runs 2 --out docs/benchmark.md
+```
+
+- `--engine whisperx|mlx` wählt die Transkription (Standard: `TRANSCRIBE_ENGINE`).
+  `mlx` braucht `uv sync --extra mac`. Die Modelle (`WHISPERX_MODEL`, `MLX_WHISPER_MODEL`) werden
+  beim ersten Lauf von Hugging Face geladen (mehrere GB).
+- Hervorhebungen kommen von OpenAI, wenn `OPENAI_API_KEY` und `OPENAI_MODEL_TEXT` gesetzt sind,
+  sonst gibt es keine. `--no-llm` schaltet sie ab.
+- Glossar-CSV: Varianten mit `|` trennen. Ohne `status` gelten Einträge als bestätigt.
+- Qualitätsprüfung: [docs/quality-test.md](docs/quality-test.md).
+
+Schrift: Montserrat (OFL), siehe [assets/fonts/README.md](assets/fonts/README.md).
+
 ## Entwicklung
 
 ```bash
