@@ -4,7 +4,13 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 1** (Etappe 0 fertig bis auf den Start des Bot-API-Servers: wartet auf Telegram-Zugangsdaten)
+Status: **Etappe 2 abgeschlossen** – Etappe 3 beginnt nach dem Qualitätstest (siehe unten).
+
+Offene Punkte früherer Etappen:
+- Etappe 0: Start des Bot-API-Servers wartet auf Telegram-Zugangsdaten (`TELEGRAM_API_ID`/`_HASH`).
+- Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)
+  vorgezogen mit Etappe 2 begonnen, da noch keine 10 Videos vorliegen. Test wird nachgeholt;
+  Etappe 3 (Kundenkontakt) erst danach.
 
 ---
 
@@ -62,7 +68,7 @@ Status: **Etappe 1** (Etappe 0 fertig bis auf den Start des Bot-API-Servers: war
   - Zoom wirkt dezent
   - Lautstärke gleichmäßig
 - Entscheidung für eine Standard-Engine ist getroffen und in `.env.example` eingetragen
-- **Erst nach erfolgreichem Qualitätstest mit Etappe 2 beginnen.**
+- **Erst nach erfolgreichem Qualitätstest mit Etappe 2 beginnen.** (Ausnahme vereinbart, siehe Status oben.)
 
 ---
 
@@ -70,14 +76,14 @@ Status: **Etappe 1** (Etappe 0 fertig bis auf den Start des Bot-API-Servers: war
 
 **Ziel:** Die Pipeline läuft als Jobs mit Versionen, zuverlässig und wiederholbar.
 
-- [ ] 2.1 `db/queue.py`: Job anlegen, Job holen mit `FOR UPDATE SKIP LOCKED`, Statuswechsel, Retry-Zähler
-- [ ] 2.2 `pipeline/steps.py`: jeder Schritt als eigene Funktion mit klaren Ein- und Ausgaben (probe, audio, transcribe, glossary, cutplan, segments, highlights, subtitles, render)
-- [ ] 2.3 `pipeline/runner.py`: Abhängigkeiten zwischen Schritten, Wiederverwendung vorhandener Ergebnisse, gezieltes Neuausführen ab einem Schritt
-- [ ] 2.4 `worker/main.py`: Schleife, Timeout pro Schritt, max. 3 Versuche, Zurücksetzen hängender Jobs beim Start, sauberes Beenden (SIGTERM)
-- [ ] 2.5 Versionen: Version 1 aus Pipeline, Speicherung von `cut_plan`, `highlights`, `subtitle_style`, `export_path`
-- [ ] 2.6 Metriken pro Job in `jobs.metrics` (Laufzeit, LLM-Tokens)
-- [ ] 2.7 Aufräum-Job: Originale und Zwischenstände nach `retention_days` ab Freigabe löschen
-- [ ] 2.8 CLI: `reels enqueue <video> --client …`, `reels jobs list`, `reels jobs retry <id>`
+- [x] 2.1 `db/queue.py`: Job anlegen, Job holen mit `FOR UPDATE SKIP LOCKED`, Statuswechsel, Retry-Zähler
+- [x] 2.2 `pipeline/steps.py`: jeder Schritt als eigene Funktion mit klaren Ein- und Ausgaben (probe, audio, transcribe, glossary, cutplan, segments, highlights, subtitles, render)
+- [x] 2.3 `pipeline/runner.py`: Abhängigkeiten zwischen Schritten, Wiederverwendung vorhandener Ergebnisse, gezieltes Neuausführen ab einem Schritt
+- [x] 2.4 `worker/main.py`: Schleife, Timeout pro Schritt, max. 3 Versuche, Zurücksetzen hängender Jobs beim Start, sauberes Beenden (SIGTERM)
+- [x] 2.5 Versionen: Version 1 aus Pipeline, Speicherung von `cut_plan`, `highlights`, `subtitle_style`, `export_path`
+- [x] 2.6 Metriken pro Job in `jobs.metrics` (Laufzeit, LLM-Tokens)
+- [x] 2.7 Aufräum-Job: Originale und Zwischenstände nach `retention_days` ab Freigabe löschen
+- [x] 2.8 CLI: `reels enqueue <video> --client …`, `reels jobs list`, `reels jobs retry <id>`
 
 **Abnahme**
 - Zwei Worker parallel verarbeiten nie denselben Job (Test)

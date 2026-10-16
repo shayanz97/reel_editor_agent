@@ -78,12 +78,13 @@ uv run reels client list
 
 Der Kunde bekommt die Default-Einstellungen aus `ClientSettings` (siehe CLAUDE.md, Abschnitt 5).
 
-## Pipeline ohne Bot (Etappe 1)
+## Pipeline ohne Bot
 
 ```bash
 uv run reels glossary import demo begriffe.csv     # term,variants,category,note,highlight,status
-uv run reels process video.mp4 --client demo       # schreibt data/clients/<id>/projects/<id>/v1/
-uv run reels process video.mp4 --client demo --project 7 --karaoke   # neu rendern, Cache nutzen
+uv run reels client set demo subtitle.karaoke=true # Kundeneinstellungen ändern (validiert)
+uv run reels process video.mp4 --client demo       # alle Schritte sofort, hier im Terminal
+uv run reels process video.mp4 --client demo --project 7   # neu rendern, Audio/Transkript wiederverwenden
 uv run reels bench-transcribe video.mp4 --runs 2 --out docs/benchmark.md
 ```
 
@@ -92,10 +93,41 @@ uv run reels bench-transcribe video.mp4 --runs 2 --out docs/benchmark.md
   beim ersten Lauf von Hugging Face geladen (mehrere GB).
 - Hervorhebungen kommen von OpenAI, wenn `OPENAI_API_KEY` und `OPENAI_MODEL_TEXT` gesetzt sind,
   sonst gibt es keine. `--no-llm` schaltet sie ab.
+- Schnellere Testrenders: `RENDER_PRESET=veryfast` in `.env`.
 - Glossar-CSV: Varianten mit `|` trennen. Ohne `status` gelten Einträge als bestätigt.
+- Ergebnisse: `data/clients/<client>/projects/<project>/` (Original, Audio, Transkript) und
+  `v<n>/` (Schnittplan, Untertitel, `export.mp4`).
 - Qualitätsprüfung: [docs/quality-test.md](docs/quality-test.md).
 
 Schrift: Montserrat (OFL), siehe [assets/fonts/README.md](assets/fonts/README.md).
+
+## Queue und Worker
+
+Jeder Pipeline-Schritt ist ein Job in Postgres (Tabelle `jobs`):
+`probe → audio → transcribe → glossary → vad → cutplan → segments → highlights → subtitles → render`.
+`reels process` führt dieselben Jobs direkt aus; im Betrieb übernimmt sie der Worker.
+
+```bash
+uv run reels enqueue video.mp4 --client demo   # Projekt + Version 1 anlegen, ersten Schritt einreihen
+uv run python -m reels.worker                  # Worker starten (mehrere parallel möglich)
+uv run python -m reels.worker --until-idle     # nur abarbeiten, was gerade ansteht
+uv run reels jobs list [--status failed]       # letzte Jobs mit Laufzeit und Fehler
+uv run reels jobs retry <job_id>               # fehlgeschlagenen Job neu einreihen
+uv run reels jobs rerun <version_id> --from cutplan   # ab einem Schritt neu (Rest wird wiederverwendet)
+```
+
+- Ein Schritt, sein Abschluss und das Einreihen des nächsten Schritts werden in **einer**
+  Transaktion gespeichert. Ein Absturz hinterlässt keine halben Ergebnisse.
+- Jeder Job läuft in einem eigenen Prozess mit Zeitlimit (`WORKER_STEP_TIMEOUT_S`).
+  Höchstens `WORKER_MAX_ATTEMPTS` Versuche, danach `failed` und Admin-Meldung
+  (bis Etappe 3 als Logzeile `admin_notify`).
+- Stirbt ein Worker mitten im Job, setzt der nächste Worker den Job beim Start zurück: Ein Job gilt
+  als verwaist, wenn seine Zeile nicht mehr von einem laufenden Schritt gesperrt ist.
+- `Ctrl+C` / SIGTERM: aktuellen Job fertig machen, dann beenden. Zweites Signal: Job abbrechen und
+  ohne Zählung des Versuchs zurück in die Queue.
+- Aufräumen: einmal pro `WORKER_CLEANUP_INTERVAL_H` löscht ein `cleanup`-Job bei freigegebenen
+  Projekten nach `retention_days` Original und Zwischenstände. Exporte und Cover bleiben.
+- Metriken pro Job in `jobs.metrics`: Laufzeit, Versuch, Wiederverwendung, LLM-Tokens.
 
 ## Entwicklung
 

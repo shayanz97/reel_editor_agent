@@ -154,9 +154,13 @@ def transcribe_step(
     return transcript
 
 
+def load_speech(paths: ProjectPaths) -> list[tuple[float, float]]:
+    return _SPANS.validate_json(paths.vad.read_text(encoding="utf-8"))
+
+
 def vad_step(paths: ProjectPaths, vad: VoiceActivityDetector) -> list[tuple[float, float]]:
     if paths.vad.exists():
-        return _SPANS.validate_json(paths.vad.read_text(encoding="utf-8"))
+        return load_speech(paths)
     regions = vad.speech_regions(paths.audio)
     write_json(paths.vad, regions)
     return regions

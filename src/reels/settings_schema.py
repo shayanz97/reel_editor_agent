@@ -6,9 +6,11 @@ Unknown keys are ignored for the same reason (a removed setting must not break l
 
 from __future__ import annotations
 
-from typing import Literal, Self
+import json
+from collections.abc import Sequence
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 SubtitlePosition = Literal["lower_third", "center", "upper_third"]
 
@@ -58,3 +60,33 @@ class ClientSettings(BaseModel):
         if self.pause_target_s > self.pause_threshold_s:
             raise ValueError("pause_target_s must not exceed pause_threshold_s")
         return self
+
+
+def apply_assignments(settings: ClientSettings, assignments: Sequence[str]) -> ClientSettings:
+    """Apply `key=value` changes (dotted keys for nested settings) and validate the result.
+
+    Values are parsed as JSON where possible (`true`, `4`, `0.3`), otherwise taken as text.
+    Unknown keys raise ValueError instead of being silently ignored.
+    """
+    data: dict[str, Any] = settings.model_dump(mode="json")
+    for assignment in assignments:
+        key, sep, raw = assignment.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"expected key=value, got {assignment!r}")
+        *parents, leaf = key.strip().split(".")
+        node: dict[str, Any] = data
+        for part in parents:
+            child = node.get(part)
+            if not isinstance(child, dict):
+                raise ValueError(f"unknown setting {key!r}")
+            node = child
+        if leaf not in node or isinstance(node[leaf], dict):
+            raise ValueError(f"unknown setting {key!r}")
+        try:
+            node[leaf] = json.loads(raw)
+        except json.JSONDecodeError:
+            node[leaf] = raw
+    try:
+        return ClientSettings.model_validate(data)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc

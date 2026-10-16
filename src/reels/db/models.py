@@ -318,6 +318,14 @@ class Job(Base):
     __table_args__ = (
         _status_check(JobStatus),
         Index("ix_jobs_status_created_at", "status", "created_at"),
+        # At most one active job per version and step: no step is ever queued twice.
+        Index(
+            "uq_jobs_active_version_step",
+            "version_id",
+            "step",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -329,6 +337,8 @@ class Job(Base):
     attempts: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     error: Mapped[str | None] = mapped_column(Text)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Unique token per claim ("host:pid:random"); fences off a worker that lost its job.
+    locked_by: Mapped[str | None] = mapped_column(String(128))
     metrics: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT
     )

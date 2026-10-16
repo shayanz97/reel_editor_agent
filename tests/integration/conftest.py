@@ -68,3 +68,29 @@ def engine(migrated_db: str) -> Iterator[Engine]:
 def session(engine: Engine) -> Iterator[Session]:
     with Session(engine) as s:
         yield s
+
+
+@pytest.fixture
+def app_env(
+    engine: Engine, migrated_db: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    """Settings for code that reads get_settings(): test DB, temp DATA_DIR, fast renders.
+
+    Yields the data dir. Env vars are inherited by worker processes spawned in the test.
+    """
+    from reels.config import get_settings
+    from reels.db.session import get_engine
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATABASE_URL", migrated_db)
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("FONTS_DIR", str(ROOT / "assets" / "fonts"))
+    monkeypatch.setenv("RENDER_PRESET", "ultrafast")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("LOG_LEVEL", "WARNING")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    yield data_dir
+    get_engine().dispose()
+    get_settings.cache_clear()
+    get_engine.cache_clear()

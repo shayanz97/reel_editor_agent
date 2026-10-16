@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from sqlalchemy import select
 
 from reels.config import get_settings
 from reels.db.clients import ClientError, create_client, get_client, list_clients
-from reels.db.glossary import add_hits, export_csv, import_terms, load_terms, parse_csv
-from reels.db.models import Client, Project, ProjectStatus
+from reels.db.glossary import export_csv, import_terms, load_terms, parse_csv
+from reels.db.models import Client, Project
 from reels.db.session import session_scope
 from reels.log import configure_logging, get_logger, log_context
 
@@ -21,8 +22,10 @@ log = get_logger(__name__)
 app = typer.Typer(no_args_is_help=True, help="Reels automation.")
 client_app = typer.Typer(no_args_is_help=True, help="Manage clients.")
 glossary_app = typer.Typer(no_args_is_help=True, help="Manage a client's glossary.")
+jobs_app = typer.Typer(no_args_is_help=True, help="Inspect and control the job queue.")
 app.add_typer(client_app, name="client")
 app.add_typer(glossary_app, name="glossary")
+app.add_typer(jobs_app, name="jobs")
 
 
 @app.callback()
@@ -93,6 +96,28 @@ def client_list() -> None:
     _print_table(("ID", "SLUG", "NAME", "ACTIVE", "TELEGRAM USERS"), rows)
 
 
+@client_app.command("set")
+def client_set(
+    client: Annotated[str, typer.Argument(help="Client slug or id.")],
+    assignments: Annotated[
+        list[str], typer.Argument(help="key=value, dotted for nested, e.g. subtitle.karaoke=true")
+    ],
+) -> None:
+    """Change client settings (validated; unknown keys are rejected)."""
+    from reels.settings_schema import ClientSettings, apply_assignments
+
+    with session_scope() as session:
+        c = _require_client(session, client)
+        try:
+            updated = apply_assignments(c.client_settings(), assignments)
+        except ValueError as exc:
+            raise _fail(str(exc)) from exc
+        c.settings = updated.model_dump(mode="json")
+        assert isinstance(updated, ClientSettings)
+    for a in assignments:
+        typer.echo(f"set {a}")
+
+
 def _print_table(header: tuple[str, ...], rows: Sequence[tuple[str, ...]]) -> None:
     widths = [max(len(r[i]) for r in [header, *rows]) for i in range(len(header))]
     for row in [header, *rows]:
@@ -137,6 +162,23 @@ def glossary_export(
 # --- pipeline ----------------------------------------------------------------
 
 
+@app.command("enqueue")
+def enqueue(
+    video: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    client: Annotated[str, typer.Option(help="Client slug or id.")],
+) -> None:
+    """Create a project with version 1 and queue it for the worker."""
+    from reels.pipeline.runner import create_project
+
+    settings = get_settings()
+    with session_scope() as session:
+        c = _require_client(session, client)
+        version = create_project(session, c, video, settings)
+        project_id, version_id = version.project_id, version.id
+    typer.echo(f"queued project={project_id} version={version_id}")
+    typer.echo("start a worker to process it: uv run python -m reels.worker")
+
+
 @app.command("process")
 def process(
     video: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
@@ -145,101 +187,164 @@ def process(
         str | None, typer.Option(help="whisperx or mlx (default: TRANSCRIBE_ENGINE).")
     ] = None,
     llm: Annotated[bool, typer.Option(help="Use OpenAI for highlights.")] = True,
-    karaoke: Annotated[
-        bool | None, typer.Option(help="Override the client's karaoke setting.")
-    ] = None,
     project: Annotated[
         int | None,
         typer.Option(help="Re-run an existing project (reuses audio, transcript and VAD)."),
     ] = None,
-    preset: Annotated[
-        str | None, typer.Option(help="x264 preset override, e.g. veryfast for quick tests.")
-    ] = None,
 ) -> None:
-    """Run the full pipeline for one video and write version 1 (no bot, no queue)."""
-    from reels.llm.openai_provider import OpenAIProvider
-    from reels.media.ffmpeg import FFmpegError
-    from reels.media.probe import VideoRejectedError
-    from reels.pipeline.process import NoSpeechError, process_v1
-    from reels.pipeline.steps import ProjectPaths
+    """Run all steps for one video right here (same jobs as the worker, no waiting)."""
+    from reels.db.models import Version
+    from reels.pipeline.runner import create_project, default_providers, rerun_from
     from reels.transcribe.base import get_engine
-    from reels.vad.silero import SileroVad
+    from reels.worker.main import Worker, WorkerConfig
 
     settings = get_settings()
     with session_scope() as session:
         c = _require_client(session, client)
-        client_settings = c.client_settings()
-        if karaoke is not None:
-            subtitle = client_settings.subtitle.model_copy(update={"karaoke": karaoke})
-            client_settings = client_settings.model_copy(update={"subtitle": subtitle})
-        terms = load_terms(session, c.id)
         if project is None:
-            p = Project(client_id=c.id, status=ProjectStatus.PROCESSING, title=video.name)
-            session.add(p)
-            session.flush()
+            version = create_project(session, c, video, settings)
         else:
-            existing = session.get(Project, project)
-            if existing is None or existing.client_id != c.id:
+            p = session.get(Project, project)
+            if p is None or p.client_id != c.id:
                 raise _fail(f"project {project} not found for client {c.slug!r}")
-            existing.status = ProjectStatus.PROCESSING
-            p = existing
-        client_id, project_id = c.id, p.id
+            latest = session.scalar(
+                select(Version).where(Version.project_id == p.id).order_by(Version.number.desc())
+            )
+            if latest is None:
+                raise _fail(f"project {project} has no version")
+            rerun_from(session, latest.id, "probe")
+            version = latest
+        project_id, version_id, client_id = version.project_id, version.id, c.id
 
-    provider = OpenAIProvider.from_settings(settings) if llm else None
-    if llm and provider is None:
+    providers = default_providers()
+    if engine is not None:
+        providers.engine = lambda _name: get_engine(engine)
+    if not llm:
+        providers.llm = lambda: None
+    elif providers.llm() is None:
         typer.echo("note: OPENAI_API_KEY/OPENAI_MODEL_TEXT not set, no highlights", err=True)
 
-    paths = ProjectPaths.for_project(settings.data_dir, client_id, project_id)
-    with log_context(client_id=client_id, project_id=project_id):
-        try:
-            result = process_v1(
-                video,
-                paths,
-                client_settings,
-                terms,
-                get_engine(engine or settings.transcribe_engine),
-                SileroVad(),
-                provider,
-                settings.fonts_dir,
-                render_preset=preset,
-            )
-        except (VideoRejectedError, NoSpeechError, FFmpegError, ValueError) as exc:
-            _set_status(project_id, ProjectStatus.FAILED)
-            log.error("process_failed", extra={"error": str(exc)})
-            raise _fail(str(exc), code=2) from exc
+    config = WorkerConfig.from_settings(settings)
+    worker = Worker(WorkerConfig(**{**config.__dict__, "isolate": False}), providers)
+    with log_context(client_id=client_id, project_id=project_id, version_id=version_id):
+        worker.run(until_idle=True, version_id=version_id)
+    _print_summary(version_id)
+
+
+def _print_summary(version_id: int) -> None:
+    from reels.db.models import Job, JobStatus, Version, VersionStatus
 
     with session_scope() as session:
-        add_hits(session, client_id, result.glossary_hits)
-    _set_status(project_id, ProjectStatus.REVIEW)
+        version = session.get(Version, version_id)
+        assert version is not None
+        jobs = session.scalars(
+            select(Job).where(Job.version_id == version_id).order_by(Job.id)
+        ).all()
+        done = {j.step: j.metrics for j in jobs if j.status is JobStatus.DONE}
+        failed = [j for j in jobs if j.status is JobStatus.FAILED]
+        status, export, project_id = version.status, version.export_path, version.project_id
 
-    typer.echo(f"project:          {project_id} (client {client_id})")
-    typer.echo(f"export:           {result.export}")
-    typer.echo(f"original:         {result.original_duration:.2f} s")
-    saved = result.original_duration - result.output_duration
-    typer.echo(f"new duration:     {result.output_duration:.2f} s (-{saved:.2f} s)")
-    typer.echo(f"cuts:             {result.cut_count}")
-    typer.echo(f"removed fillers:  {result.removed_fillers}")
+    typer.echo(f"project/version:  {project_id} / {version_id} ({status.value})")
+    if failed:
+        j = failed[-1]
+        raise _fail(f"step {j.step} failed after {j.attempts} attempts: {j.error}", code=2)
+    if status is not VersionStatus.READY:
+        typer.echo("not finished here; remaining steps run in a worker (see `reels jobs list`)")
+        return
+    probe, cut = done.get("probe", {}), done.get("cutplan", {})
+    words = done.get("transcribe", {})
+    typer.echo(f"export:           {get_settings().data_dir / (export or '')}")
+    original, output = probe.get("duration_s", 0.0), cut.get("output_s", 0.0)
+    typer.echo(f"original:         {original:.2f} s")
+    typer.echo(f"new duration:     {output:.2f} s (-{original - output:.2f} s)")
+    typer.echo(f"cuts:             {cut.get('cuts')}")
+    typer.echo(f"removed fillers:  {cut.get('removed_words')}")
     typer.echo(
-        f"words/segments:   {result.words} / {result.segments}, highlights: {result.highlights}"
+        f"words/segments:   {words.get('words')} / {done.get('segments', {}).get('segments')}, "
+        f"highlights: {done.get('highlights', {}).get('highlights')}"
     )
-    if result.glossary_hits:
-        hits = ", ".join(f"{t} x{n}" for t, n in result.glossary_hits.most_common())
-        typer.echo(f"glossary:         {hits}")
-    for u in result.llm_usage:
-        typer.echo(
-            f"llm:              {u.task} {u.model} in={u.input_tokens} out={u.output_tokens}"
-        )
+    if words.get("reused"):
+        typer.echo("transcript:       reused")
+    hits = done.get("glossary", {}).get("hits") or {}
+    if hits:
+        typer.echo("glossary:         " + ", ".join(f"{t} x{n}" for t, n in hits.items()))
+    hl = done.get("highlights", {})
+    if hl.get("llm_input_tokens"):
+        typer.echo(f"llm tokens:       in={hl['llm_input_tokens']} out={hl['llm_output_tokens']}")
     typer.echo("step timings:")
-    for name, seconds in result.timings.items():
-        typer.echo(f"  {name:<15} {seconds:8.2f} s")
-    typer.echo(f"  {'total':<15} {sum(result.timings.values()):8.2f} s")
+    total = 0.0
+    for step, metrics in done.items():
+        runtime = float(metrics.get("runtime_s", 0.0))
+        total += runtime
+        typer.echo(f"  {step:<15} {runtime:8.2f} s")
+    typer.echo(f"  {'total':<15} {total:8.2f} s")
 
 
-def _set_status(project_id: int, status: ProjectStatus) -> None:
+# --- jobs --------------------------------------------------------------------
+
+
+@jobs_app.command("list")
+def jobs_list(
+    status: Annotated[
+        list[str] | None, typer.Option(help="Filter: queued, running, done, failed. Repeatable.")
+    ] = None,
+    limit: Annotated[int, typer.Option(min=1)] = 30,
+) -> None:
+    """Most recent jobs first."""
+    from reels.db import queue
+    from reels.db.models import JobStatus
+
+    try:
+        statuses = [JobStatus(s) for s in status or []]
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
     with session_scope() as session:
-        p = session.get(Project, project_id)
-        if p is not None:
-            p.status = status
+        rows = [
+            (
+                str(j.id),
+                str(j.version_id or "-"),
+                j.step,
+                j.status.value,
+                str(j.attempts),
+                f"{j.metrics.get('runtime_s', 0):.1f}" if j.metrics.get("runtime_s") else "-",
+                (j.error or "").splitlines()[0][:60] if j.error else "",
+            )
+            for j in queue.list_jobs(session, statuses, limit)
+        ]
+    if not rows:
+        typer.echo("no jobs")
+        return
+    _print_table(("ID", "VERSION", "STEP", "STATUS", "TRIES", "SECONDS", "ERROR"), rows)
+
+
+@jobs_app.command("retry")
+def jobs_retry(job_id: Annotated[int, typer.Argument()]) -> None:
+    """Put a failed job back into the queue (attempts start from zero)."""
+    from reels.db import queue
+
+    with session_scope() as session:
+        ok = queue.retry(session, job_id)
+    if not ok:
+        raise _fail(f"job {job_id} is not failed or the step is already queued")
+    typer.echo(f"job {job_id} queued again")
+
+
+@jobs_app.command("rerun")
+def jobs_rerun(
+    version_id: Annotated[int, typer.Argument()],
+    from_step: Annotated[str, typer.Option("--from", help="First step to run again.")] = "probe",
+) -> None:
+    """Run a version again from a step on; earlier results (audio, transcript) are reused."""
+    from reels.pipeline.runner import rerun_from
+
+    try:
+        with session_scope() as session:
+            job_id = rerun_from(session, version_id, from_step)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    if job_id is None:
+        raise _fail(f"step {from_step} is already queued or running for version {version_id}")
+    typer.echo(f"queued job {job_id}: version {version_id} from {from_step}")
 
 
 @app.command("bench-transcribe")

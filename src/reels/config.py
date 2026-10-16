@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     whisperx_model: str = "large-v3-turbo"
     whisperx_batch_size: int = 8
     mlx_whisper_model: str = "mlx-community/whisper-large-v3-turbo"
+    # x264 preset for exports (None = RenderOptions default "medium").
+    render_preset: str | None = None
+
+    # Worker
+    worker_poll_interval_s: float = 1.0
+    worker_max_attempts: int = 3
+    # Seconds between claim and the step taking its row lock before a job counts as orphaned.
+    worker_orphan_grace_s: float = 60.0
+    # Hard limit per step; the step's process is killed afterwards. Upper bounds, not estimates.
+    worker_step_timeout_s: float = 1800.0
+    worker_cleanup_interval_h: float = 24.0
+    # Where steps get engines/VAD/LLM from ('module:function'). Only changed by tests.
+    worker_providers_factory: str = "reels.pipeline.runner:default_providers"
     log_level: str = "INFO"
     log_format: Literal["json", "text"] = "text"
 
