@@ -15,7 +15,12 @@ Orientation = Literal["portrait", "landscape", "square"]
 
 
 class VideoRejectedError(Exception):
-    """The video cannot be processed (too long, no audio, no video). Message is for operators."""
+    """The video cannot be processed. Message is for operators, `code` selects the client text."""
+
+    def __init__(self, message: str, code: str, **details: float) -> None:
+        super().__init__(message)
+        self.code = code  # too_long | no_audio | no_video
+        self.details = details
 
 
 class ProbeResult(BaseModel):
@@ -62,7 +67,7 @@ def parse_probe(data: dict[str, Any]) -> ProbeResult:
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
     if video is None:
-        raise VideoRejectedError("no video stream")
+        raise VideoRejectedError("no video stream", "no_video")
     duration = float(data.get("format", {}).get("duration") or video.get("duration") or 0)
     rotation = _rotation(video)
     width, height = int(video["width"]), int(video["height"])
@@ -93,7 +98,10 @@ def probe(path: Path) -> ProbeResult:
 def check_processable(result: ProbeResult, max_duration_s: float) -> None:
     if result.duration > max_duration_s:
         raise VideoRejectedError(
-            f"video is {result.duration:.1f}s long, limit is {max_duration_s:.0f}s"
+            f"video is {result.duration:.1f}s long, limit is {max_duration_s:.0f}s",
+            "too_long",
+            duration_s=result.duration,
+            limit_s=max_duration_s,
         )
     if not result.has_audio:
-        raise VideoRejectedError("no audio stream")
+        raise VideoRejectedError("no audio stream", "no_audio")

@@ -179,6 +179,9 @@ class Project(Base):
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Bot bookkeeping: the status message that gets edited, and the last status told.
+    status_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    notified_status: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -257,6 +260,11 @@ class Version(Base):
     subtitle_style: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     preview_path: Mapped[str | None] = mapped_column(Text)
     export_path: Mapped[str | None] = mapped_column(Text)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Bot bookkeeping (what the client has been told about this version).
+    preview_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    preview_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -344,5 +352,6 @@ class Job(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    admin_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()

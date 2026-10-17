@@ -71,10 +71,10 @@ def _setup(
         return version.id, Path(spec.path)
 
 
-def _run(isolate: bool = False, **overrides: object) -> int:
+def _run(isolate: bool = False, max_jobs: int | None = None, **overrides: object) -> int:
     config = WorkerConfig.from_settings(get_settings())
     config = WorkerConfig(**{**config.__dict__, "isolate": isolate, **overrides})  # type: ignore[arg-type]
-    return Worker(config, make_providers()).run(until_idle=True)
+    return Worker(config, make_providers()).run(until_idle=True, max_jobs=max_jobs)
 
 
 def _calls(tmp_path: Path) -> int:
@@ -216,6 +216,8 @@ def test_too_long_video_fails_immediately_and_notifies(
         version = session.get(Version, version_id)
         assert (job.step, job.status, job.attempts) == ("probe", JobStatus.FAILED, 1)
         assert "limit is 2s" in (job.error or "")
+        assert job.metrics["error_code"] == "too_long"
+        assert job.metrics["error_details"]["limit_s"] == 2
         assert version is not None and version.status is VersionStatus.FAILED
     assert "endgültig fehlgeschlagen" in (tmp_path / "notify.txt").read_text()
     assert _calls(tmp_path) == 0

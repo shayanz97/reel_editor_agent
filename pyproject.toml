@@ -5,6 +5,7 @@ description = "Reels-Automatisierung: Telegram-Video rein, geschnittenes Reel mi
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "aiogram>=3.31.0",
     "alembic>=1.13",
     "numpy>=2.5.4",
     "openai>=3.31.0",

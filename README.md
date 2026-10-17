@@ -129,6 +129,32 @@ uv run reels jobs rerun <version_id> --from cutplan   # ab einem Schritt neu (Re
   Projekten nach `retention_days` Original und Zwischenstände. Exporte und Cover bleiben.
 - Metriken pro Job in `jobs.metrics`: Laufzeit, Versuch, Wiederverwendung, LLM-Tokens.
 
+## Telegram-Bot
+
+Voraussetzungen: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` und `ADMIN_CHAT_ID`
+in `.env`, `docker compose up -d` (Bot API Server läuft im `--local`-Modus).
+
+```bash
+uv run python -m reels.bot --logout-cloud      # einmalig: Bot vom Telegram-Cloud-Server abmelden
+uv run python -m reels.bot                     # Bot (Terminal 1)
+uv run python -m reels.worker                  # Worker (Terminal 2)
+```
+
+- Nur Telegram-Nutzer aus `client_users` dürfen schreiben:
+  `uv run reels client add "Name" --telegram-user <id>` oder im Admin-Chat `/kunde_user <kunde> <id>`.
+  Unbekannte bekommen eine kurze Absage, der Admin-Chat einen Hinweis mit der ID.
+- Ablauf: Video senden (am besten als Datei) → Statusnachricht wird aktualisiert
+  (empfangen → in Bearbeitung → Vorschau fertig) → Vorschauvideo + nummerierte Sätze +
+  Buttons „Freigeben“ / „Ändern“ → bei „Freigeben“ kommt der Export als Datei.
+- „Ändern“ informiert bis Etappe 4 nur den Admin-Chat.
+- Fehler: Der Kunde bekommt eine verständliche Nachricht (z. B. „Video zu lang“), der Admin-Chat
+  Job-ID und Ursache.
+- Admin-Chat (`ADMIN_CHAT_ID`): `/kunde_neu <Name> [| Telegram-ID …]`, `/kunde_user <kunde> <id>`,
+  `/status`, `/admin`.
+- Alle Kundentexte stehen in `src/reels/bot/texts.py`.
+- Der Bot rechnet nichts selbst: Er legt Projekte und Jobs an und meldet zurück, was der Worker
+  erledigt hat (Abfrage der Datenbank alle 2 s).
+
 ## Entwicklung
 
 ```bash

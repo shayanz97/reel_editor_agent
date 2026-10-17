@@ -65,7 +65,15 @@ CLEANUP_STEP = "cleanup"
 
 
 class PermanentStepError(Exception):
-    """Retrying cannot help (video too long, no speech). The job fails immediately."""
+    """Retrying cannot help (video too long, no speech). The job fails immediately.
+
+    `code` and `details` end up in jobs.metrics so the bot can tell the client why.
+    """
+
+    def __init__(self, message: str, code: str = "permanent", **details: float) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 class Notifier(Protocol):
@@ -240,7 +248,9 @@ def execute_job(
                 session.commit()
             except Exception as exc:
                 session.rollback()
-                runtime = round(time.perf_counter() - start, 3)
+                failure: dict[str, Any] = {"runtime_s": round(time.perf_counter() - start, 3)}
+                if isinstance(exc, PermanentStepError):
+                    failure.update(error_code=exc.code, error_details=exc.details)
                 log.exception("step_failed", extra={"step": step})
                 return handle_failure(
                     engine,
@@ -249,7 +259,7 @@ def execute_job(
                     providers.notifier,
                     permanent=isinstance(exc, PermanentStepError),
                     max_attempts=max_attempts,
-                    metrics={"runtime_s": runtime},
+                    metrics=failure,
                 )
             log.info("step_done", extra={"step": step, "runtime_s": metrics["runtime_s"]})
             return JobStatus.DONE
@@ -315,7 +325,7 @@ def _original(ctx: StepContext) -> Path:
         )
     )
     if rel is None:
-        raise PermanentStepError("project has no original video")
+        raise PermanentStepError("project has no original video", "no_original")
     return ctx.path(rel)
 
 
@@ -353,7 +363,7 @@ def step_probe(ctx: StepContext) -> None:
     try:
         result = steps.probe_step(_original(ctx), ctx.paths, ctx.settings)
     except VideoRejectedError as exc:
-        raise PermanentStepError(str(exc)) from exc
+        raise PermanentStepError(str(exc), exc.code, **exc.details) from exc
     ctx.metrics.update(
         duration_s=result.duration, width=result.width, height=result.height, fps=result.fps
     )
@@ -426,7 +436,7 @@ def step_cutplan(ctx: StepContext) -> None:
     src = _probe(ctx)
     plan = steps.cutplan_step(_transcript(ctx), speech, src, ctx.settings)
     if not plan.keep:
-        raise PermanentStepError("no speech found in the video")
+        raise PermanentStepError("no speech found in the video", "no_speech")
     ctx.version.cut_plan = plan.model_dump(mode="json")
     steps.write_json(ctx.paths.version(ctx.version.number).cutplan, plan)
     ctx.metrics.update(

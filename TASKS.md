@@ -4,13 +4,13 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 2 abgeschlossen** – Etappe 3 beginnt nach dem Qualitätstest (siehe unten).
+Status: **Etappe 3** – Code fertig und mit Fakes getestet; Abnahme mit echtem Telegram steht aus.
 
 Offene Punkte früherer Etappen:
-- Etappe 0: Start des Bot-API-Servers wartet auf Telegram-Zugangsdaten (`TELEGRAM_API_ID`/`_HASH`).
 - Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)
-  vorgezogen mit Etappe 2 begonnen, da noch keine 10 Videos vorliegen. Test wird nachgeholt;
-  Etappe 3 (Kundenkontakt) erst danach.
+  vorgezogen mit Etappe 2 begonnen, da noch keine 10 Videos vorliegen. Test wird nachgeholt.
+  Etappe 3 wird gebaut und nur mit dem eigenen Telegram-Konto getestet (2026-10-17);
+  **echte Kunden erst nach bestandenem Qualitätstest freischalten.**
 
 ---
 
@@ -97,15 +97,15 @@ Offene Punkte früherer Etappen:
 
 **Ziel:** Kunde schickt Video, bekommt Vorschau mit Segmentliste und kann freigeben.
 
-- [ ] 3.1 `bot/main.py`: aiogram mit lokalem Bot API Server, Polling
-- [ ] 3.2 Zugriffsprüfung über `client_users`, Absage für Unbekannte + Hinweis an Admin-Chat
-- [ ] 3.3 Empfang von Video als Datei und als komprimiertes Video (Hinweis „bitte als Datei senden“), Pfadabbildung Container→Host, Projekt + Job anlegen, Duplikaterkennung über `message_id`
-- [ ] 3.4 Optionaler Begleittext wird gespeichert (für spätere Nutzung als Referenz)
-- [ ] 3.5 Statusmeldungen: empfangen, in Bearbeitung, Vorschau bereit (Nachricht bearbeiten statt neue senden)
-- [ ] 3.6 Vorschau: Video per Upload + nummerierte Segmentliste + Buttons „Freigeben“ und „Ändern“
-- [ ] 3.7 Freigabe setzt `approved_at`, sendet finalen Export
-- [ ] 3.8 Admin-Chat: Fehler mit Job-ID und Ursache, Admin-Befehle `/kunde_neu`, `/kunde_user`, `/status`
-- [ ] 3.9 Alle Kundentexte zentral in `bot/texts.py` (Deutsch, Du, fachlich, knapp)
+- [x] 3.1 `bot/main.py`: aiogram mit lokalem Bot API Server, Polling
+- [x] 3.2 Zugriffsprüfung über `client_users`, Absage für Unbekannte + Hinweis an Admin-Chat
+- [x] 3.3 Empfang von Video als Datei und als komprimiertes Video (Hinweis „bitte als Datei senden“), Pfadabbildung Container→Host, Projekt + Job anlegen, Duplikaterkennung über `message_id`
+- [x] 3.4 Optionaler Begleittext wird gespeichert (für spätere Nutzung als Referenz)
+- [x] 3.5 Statusmeldungen: empfangen, in Bearbeitung, Vorschau bereit (Nachricht bearbeiten statt neue senden)
+- [x] 3.6 Vorschau: Video per Upload + nummerierte Segmentliste + Buttons „Freigeben“ und „Ändern“
+- [x] 3.7 Freigabe setzt `approved_at`, sendet finalen Export
+- [x] 3.8 Admin-Chat: Fehler mit Job-ID und Ursache, Admin-Befehle `/kunde_neu`, `/kunde_user`, `/status`
+- [x] 3.9 Alle Kundentexte zentral in `bot/texts.py` (Deutsch, Du, fachlich, knapp)
 
 **Abnahme**
 - Ende-zu-Ende lokal: Video in Telegram senden → Vorschau kommt zurück → Freigeben → Export kommt
