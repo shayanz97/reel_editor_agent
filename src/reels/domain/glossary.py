@@ -114,3 +114,20 @@ def apply_glossary(
                 result[words[i + k].id] = text
         i += n
     return result, hits
+
+
+def apply_glossary_text(text: str, terms: Sequence[GlossaryTerm]) -> str:
+    """Correct spellings in free text (post text, headlines): known variants -> term,
+    word-boundary safe and case-insensitive; the term itself fixes its case."""
+    replacements: list[tuple[str, str]] = []
+    for t in terms:
+        if t.status != "confirmed":
+            continue
+        for variant in [t.term, *t.variants]:
+            if variant.strip():
+                replacements.append((variant.strip(), t.term))
+    replacements.sort(key=lambda r: -len(r[0]))  # longest first
+    for variant, term in replacements:
+        pattern = r"(?<!\w)" + r"\s+".join(re.escape(p) for p in variant.split()) + r"(?!\w)"
+        text = re.sub(pattern, term, text, flags=re.IGNORECASE)
+    return text

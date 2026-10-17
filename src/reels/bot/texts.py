@@ -50,7 +50,10 @@ PREVIEW_QUESTION = (
 )
 BUTTON_APPROVE = "✅ Freigeben"
 BUTTON_CHANGE = "✏️ Ändern"
-APPROVED = "Freigegeben 🎉 Hier ist dein fertiges Video in voller Qualität."
+APPROVED = (
+    "Freigegeben 🎉 Hier ist dein fertiges Video in voller Qualität. "
+    "Cover, Beitragstext und Hashtags bereite ich gerade vor."
+)
 APPROVED_STATUS = "✅ Freigegeben (Version {number})."
 ALREADY_APPROVED = "Dieses Video ist bereits freigegeben."
 OUTDATED = "Diese Vorschau ist nicht mehr aktuell. Bitte nutze die neueste Version."
@@ -60,6 +63,34 @@ CHANGE_PROMPT = (
     "Schreib mir, was geändert werden soll. Zum Beispiel:\n"
     "„In Satz 2 heißt es Kubernetes, Satz 3 raus.“"
 )
+
+# --- publish package ------------------------------------------------------------------
+
+PUBLISH_INTRO = "📦 Dein Veröffentlichungspaket: Wähl ein Cover und prüf den Beitragstext."
+PUBLISH_COVER_CAPTION = "Cover {number}: {headline}"
+BUTTON_COVER = "✅ Cover {number} nehmen"
+BUTTON_TEXT_OK = "✅ Text passt"
+PUBLISH_TEXT = (
+    "📝 Beitragstext (Vorschlag):\n\n{text}\n\n"
+    "Passt er? Wenn nicht, antworte mir einfach, was anders sein soll."
+)
+PUBLISH_TEXT_REVISED = "📝 Überarbeiteter Beitragstext:\n\n{text}\n\nPasst er so?"
+PUBLISH_TEXT_REVISION_FAILED = (
+    "Den Text konnte ich gerade nicht anpassen. Hier nochmal der aktuelle Stand:\n\n{text}"
+)
+PUBLISH_COVER_CHOSEN = "👍 Cover {number} ist gesetzt."
+PUBLISH_TEXT_CONFIRMED = "👍 Text ist bestätigt."
+PUBLISH_OPEN_COVER = "Noch offen: Wähl ein Cover."
+PUBLISH_OPEN_TEXT = "Noch offen: Bestätige den Text oder schreib mir, was anders sein soll."
+PUBLISH_REVISING = "⏳ Ich passe den Text an …"
+PUBLISH_BUSY = "Einen Moment, ich bin noch am Text dran."
+PUBLISH_FINAL = "✅ Fertig! Hier ist dein Cover in voller Qualität."
+PUBLISH_FINAL_TEXT = "Dein Beitragstext zum Kopieren:"
+PUBLISH_FAILED = (
+    "❌ Cover und Beitragstext konnten gerade nicht erstellt werden. "
+    "Dein Video hast du schon, wir kümmern uns darum."
+)
+PUBLISH_DONE = "Dieses Paket ist schon abgeschlossen."
 
 # --- corrections -------------------------------------------------------------------
 

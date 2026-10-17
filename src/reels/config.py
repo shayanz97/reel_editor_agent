@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data")
     fonts_dir: Path = Path("assets/fonts")
+    templates_dir: Path = Path("assets/templates")
     ffmpeg_bin: str = "ffmpeg"
     ffprobe_bin: str = "ffprobe"
 

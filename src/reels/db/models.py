@@ -77,6 +77,13 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class PublishStatus(StrEnum):
+    PENDING = "pending"  # jobs running
+    READY = "ready"  # covers + text offered, waiting for the client's choice
+    DONE = "done"  # final package sent
+    FAILED = "failed"
+
+
 class AssetKind(StrEnum):
     ORIGINAL = "original"
     AUDIO = "audio"
@@ -360,5 +367,42 @@ class Job(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     admin_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class PublishPackage(Base):
+    """Instagram package of an approved version: 3 covers, post text, hashtags."""
+
+    __tablename__ = "publish_packages"
+    __table_args__ = (_status_check(PublishStatus),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("versions.id", ondelete="CASCADE"), unique=True
+    )
+    status: Mapped[PublishStatus] = mapped_column(
+        StrEnumType(PublishStatus), default=PublishStatus.PENDING
+    )
+    # Candidate frames (paths relative to DATA_DIR, scores) chosen by `frames`.
+    candidates: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=_EMPTY_JSON_ARRAY
+    )
+    # [{"number", "frame", "headline", "path"}] from `cover_plan` / `covers`.
+    covers: Mapped[list[Any]] = mapped_column(JSONB, default=list, server_default=_EMPTY_JSON_ARRAY)
+    selected_cover: Mapped[int | None]
+    post: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT
+    )  # {"hook", "body", "cta", "hashtags"}
+    post_text: Mapped[str | None] = mapped_column(Text)
+    text_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision_request: Mapped[str | None] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    # Bot bookkeeping.
+    offer_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    text_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    text_sent_revision: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    final_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()

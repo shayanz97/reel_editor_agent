@@ -41,6 +41,7 @@ class FakeBot:
     videos: list[tuple[int, Path, dict[str, Any]]] = field(default_factory=list)
     documents: list[tuple[int, Path, str | None]] = field(default_factory=list)
     document_data: list[bytes] = field(default_factory=list)
+    photos: list[tuple[int, Path, Sent]] = field(default_factory=list)
     fail_edit: bool = False
     fail_send: bool = False
     next_id: int = 500
@@ -67,6 +68,13 @@ class FakeBot:
 
     async def send_video(self, chat_id: int, video: Any, **kwargs: Any) -> None:
         self.videos.append((chat_id, Path(video.path), kwargs))
+
+    async def send_photo(self, chat_id: int, photo: Any, caption: str | None = None,
+                         reply_markup: Any = None) -> Sent:  # fmt: skip
+        self.next_id += 1
+        sent = Sent(chat_id, caption or "", reply_markup, self.next_id)
+        self.photos.append((chat_id, Path(photo.path), sent))
+        return sent
 
     async def send_document(self, chat_id: int, document: Any, caption: str | None = None,
                             request_timeout: int | None = None) -> None:  # fmt: skip

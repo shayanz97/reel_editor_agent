@@ -33,6 +33,8 @@ from reels.db.models import (
     JobStatus,
     Project,
     ProjectStatus,
+    PublishPackage,
+    PublishStatus,
     Version,
     VersionStatus,
 )
@@ -52,9 +54,11 @@ from reels.domain.vocab import VocabQuestion
 from reels.domain.words import Word, normalize_token
 from reels.pipeline.runner import (
     CORRECTION_STEP,
+    POST_REVISE_STEP,
     create_next_version,
     create_project,
     next_step,
+    start_publishing,
     version_state,
 )
 from reels.pipeline.steps import ProjectPaths
@@ -204,6 +208,38 @@ class CorrectionFailedNotice:
 
 
 @dataclass(frozen=True)
+class PublishOfferNotice:
+    package_id: int
+    chat_id: int
+    covers: list[tuple[int, Path, str]]  # number, png, headline
+    text: str
+    revision: int
+
+
+@dataclass(frozen=True)
+class PublishTextNotice:
+    package_id: int
+    chat_id: int
+    text: str
+    revision: int
+    failed: bool  # the requested change did not work; this is the unchanged text
+
+
+@dataclass(frozen=True)
+class PublishFinalNotice:
+    package_id: int
+    chat_id: int
+    cover: Path
+    text: str
+
+
+@dataclass(frozen=True)
+class PublishFailedNotice:
+    package_id: int
+    chat_id: int
+
+
+@dataclass(frozen=True)
 class VocabNotice:
     version_id: int
     chat_id: int
@@ -211,7 +247,11 @@ class VocabNotice:
 
 
 Notice = (
-    VocabNotice
+    PublishOfferNotice
+    | PublishTextNotice
+    | PublishFinalNotice
+    | PublishFailedNotice
+    | VocabNotice
     | ProcessingNotice
     | PreviewNotice
     | FailureNotice
@@ -308,6 +348,41 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
             )
         )
 
+    packages = session.execute(
+        select(PublishPackage, Project)
+        .join(Version, Version.id == PublishPackage.version_id)
+        .join(Project, Project.id == Version.project_id)
+        .where(Project.telegram_chat_id.is_not(None), PublishPackage.final_sent_at.is_(None))
+        .order_by(PublishPackage.id)
+    ).all()
+    for pkg, p in packages:
+        assert p.telegram_chat_id is not None
+        chat = p.telegram_chat_id
+        if pkg.status is PublishStatus.FAILED:
+            if pkg.failure_notified_at is None:
+                notices.append(PublishFailedNotice(pkg.id, chat))
+            continue
+        if pkg.status is not PublishStatus.READY:
+            continue
+        text = pkg.post_text or ""
+        if pkg.offer_sent_at is None:
+            cover_list = [
+                (c["number"], app.data_dir / c["path"], c["headline"])
+                for c in pkg.covers
+                if "path" in c
+            ]
+            notices.append(PublishOfferNotice(pkg.id, chat, cover_list, text, pkg.revision))
+        elif pkg.revision > pkg.text_sent_revision:
+            revision_failed = bool(pkg.post.get("revision_failed"))
+            notices.append(PublishTextNotice(pkg.id, chat, text, pkg.revision, revision_failed))
+        elif (
+            pkg.selected_cover is not None
+            and pkg.text_confirmed_at is not None
+            and pkg.revision_request is None
+        ):
+            cover = next(c for c in pkg.covers if c["number"] == pkg.selected_cover)
+            notices.append(PublishFinalNotice(pkg.id, chat, app.data_dir / cover["path"], text))
+
     waiting = session.execute(
         select(Version, Project)
         .join(Project, Project.id == Version.project_id)
@@ -400,6 +475,27 @@ def mark_notice_sent(
         return
     if isinstance(message_id, dict):
         message_id = None
+    if isinstance(
+        notice, PublishOfferNotice | PublishTextNotice | PublishFinalNotice | PublishFailedNotice
+    ):
+        package = session.get(PublishPackage, notice.package_id)
+        if package is None:
+            return
+        match notice:
+            case PublishOfferNotice():
+                package.offer_sent_at = now
+                package.text_message_id = message_id
+                package.text_sent_revision = notice.revision
+            case PublishTextNotice():
+                package.text_message_id = message_id
+                package.text_sent_revision = notice.revision
+                package.post = {**package.post, "revision_failed": False}
+            case PublishFinalNotice():
+                package.final_sent_at = now
+                package.status = PublishStatus.DONE
+            case PublishFailedNotice():
+                package.failure_notified_at = now
+        return
     match notice:
         case ProcessingNotice():
             project = session.get(Project, notice.project_id)
@@ -502,6 +598,7 @@ def approve(
     project.status = ProjectStatus.APPROVED
     project.notified_status = ProjectStatus.APPROVED.value
     version.approved_at = now
+    start_publishing(session, version.id)
     return replace(result, export=app.data_dir / version.export_path)
 
 
@@ -859,6 +956,105 @@ def _apply_vocab_answers(
     following = next_step(VOCAB_STEP)
     assert following is not None
     queue.enqueue(session, version.id, following)
+
+
+# --- publish package (5.7) ------------------------------------------------------------
+
+
+def _package_for_user(
+    session: Session, package_id: int, telegram_user_id: int
+) -> PublishPackage | None:
+    return session.scalar(
+        select(PublishPackage)
+        .join(Version, Version.id == PublishPackage.version_id)
+        .join(Project, Project.id == Version.project_id)
+        .join(ClientUser, ClientUser.client_id == Project.client_id)
+        .where(PublishPackage.id == package_id, ClientUser.telegram_user_id == telegram_user_id)
+        .with_for_update(of=PublishPackage)
+    )
+
+
+@dataclass(frozen=True)
+class PublishChoice:
+    decision: Decision
+    cover_chosen: bool = False
+    text_confirmed: bool = False
+
+
+def _choice(decision: Decision, package: PublishPackage) -> PublishChoice:
+    return PublishChoice(
+        decision, package.selected_cover is not None, package.text_confirmed_at is not None
+    )
+
+
+def select_cover(
+    session: Session, package_id: int, number: int, telegram_user_id: int
+) -> PublishChoice:
+    package = _package_for_user(session, package_id, telegram_user_id)
+    if package is None:
+        return PublishChoice(Decision.FORBIDDEN)
+    if package.final_sent_at is not None:
+        return _choice(Decision.ALREADY_APPROVED, package)
+    if not any(c["number"] == number for c in package.covers):
+        return _choice(Decision.OUTDATED, package)
+    package.selected_cover = number
+    return _choice(Decision.OK, package)
+
+
+def confirm_text(session: Session, package_id: int, telegram_user_id: int) -> PublishChoice:
+    package = _package_for_user(session, package_id, telegram_user_id)
+    if package is None:
+        return PublishChoice(Decision.FORBIDDEN)
+    if package.final_sent_at is not None:
+        return _choice(Decision.ALREADY_APPROVED, package)
+    if package.revision_request is not None:
+        return _choice(Decision.NOT_READY, package)  # a change is being made right now
+    package.text_confirmed_at = datetime.now(UTC)
+    return _choice(Decision.OK, package)
+
+
+def publish_text_target(
+    session: Session, access: Access, chat_id: int, reply_to: int | None
+) -> int | None:
+    """Package whose post text a free-text message refers to (reply, or the open one)."""
+    base = (
+        select(PublishPackage)
+        .join(Version, Version.id == PublishPackage.version_id)
+        .join(Project, Project.id == Version.project_id)
+        .where(
+            Project.client_id == access.client_id,
+            Project.telegram_chat_id == chat_id,
+            PublishPackage.status == PublishStatus.READY,
+            PublishPackage.final_sent_at.is_(None),
+        )
+    )
+    if reply_to is not None:
+        package = session.scalar(base.where(PublishPackage.text_message_id == reply_to))
+        if package is not None:
+            return package.id
+    package = session.scalar(
+        base.where(
+            PublishPackage.offer_sent_at.is_not(None), PublishPackage.text_confirmed_at.is_(None)
+        ).order_by(PublishPackage.id.desc())
+    )
+    return package.id if package is not None else None
+
+
+def request_text_revision(
+    session: Session, package_id: int, telegram_user_id: int, request: str
+) -> Decision:
+    package = _package_for_user(session, package_id, telegram_user_id)
+    if package is None:
+        return Decision.FORBIDDEN
+    if package.final_sent_at is not None:
+        return Decision.ALREADY_APPROVED
+    if package.revision_request is not None:
+        return Decision.NOT_READY
+    if queue.enqueue(session, package.version_id, POST_REVISE_STEP) is None:
+        return Decision.NOT_READY
+    package.revision_request = request.strip()
+    package.text_confirmed_at = None
+    return Decision.OK
 
 
 # --- admin --------------------------------------------------------------------

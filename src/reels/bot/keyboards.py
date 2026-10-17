@@ -14,9 +14,11 @@ GLOSSARY_ADD = "gladd"  # + correction id + operation index
 GLOSSARY_SKIP = "glskip"  # + correction id + operation index
 VOCAB_KEEP = "vkeep"  # + version id + question id
 VOCAB_SUGGESTION = "vsugg"  # + version id + question id
+COVER = "cover"  # + package id + cover number
+TEXT_OK = "textok"  # + package id
 
 _ACTIONS = {APPROVE: 1, CHANGE: 1, APPLY: 1, RETRY: 1, GLOSSARY_ADD: 2, GLOSSARY_SKIP: 2,
-            VOCAB_KEEP: 2, VOCAB_SUGGESTION: 2}  # fmt: skip
+            VOCAB_KEEP: 2, VOCAB_SUGGESTION: 2, COVER: 2, TEXT_OK: 1}  # fmt: skip
 
 
 def preview_keyboard(version_id: int) -> InlineKeyboardMarkup:
@@ -78,6 +80,21 @@ def vocab_keyboard(
             )
         )
     return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def cover_keyboard(package_id: int, number: int) -> InlineKeyboardMarkup:
+    button = InlineKeyboardButton(
+        text=texts.BUTTON_COVER.format(number=number),
+        callback_data=f"{COVER}:{package_id}:{number}",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
+
+
+def text_keyboard(package_id: int) -> InlineKeyboardMarkup:
+    button = InlineKeyboardButton(
+        text=texts.BUTTON_TEXT_OK, callback_data=f"{TEXT_OK}:{package_id}"
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
 def parse_callback(data: str | None) -> tuple[str, tuple[int, ...]] | None:

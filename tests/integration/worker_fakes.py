@@ -20,7 +20,15 @@ from typing import Any
 
 from reels.domain.words import Transcript
 from reels.llm.base import LLMUsage
-from reels.llm.schemas import CorrectionResponse, HighlightPlan, SegmentHighlight, VocabResponse
+from reels.llm.schemas import (
+    CorrectionResponse,
+    CoverChoice,
+    CoverPlanResponse,
+    HighlightPlan,
+    PostDraft,
+    SegmentHighlight,
+    VocabResponse,
+)
 from reels.pipeline.runner import Providers
 from reels.transcribe.base import FakeEngine
 from reels.vad.silero import FixedVad
@@ -76,6 +84,22 @@ class FakeLLM:
                 fh.write(prompt + "\n=====\n")
         if task == "corrections":
             return CorrectionResponse.model_validate_json(os.environ["REELS_TEST_CORRECTION"])
+        if task == "covers":
+            count = len(images or [])
+            choices = [
+                CoverChoice(image=n, headline=f"Titel {n}", reason="t")
+                for n in range(1, min(count, 3) + 1)
+            ]
+            return CoverPlanResponse(covers=choices)
+        if task == "post_text":
+            return PostDraft(
+                hook="Wusstest du das?",
+                body="Drei Wege zur Million.",
+                cta="Was ist dein Weg?",
+                hashtags=["#Geld", "geld", "#Finanzen tipps", "123"],
+            )
+        if task == "post_revise":
+            return PostDraft(hook="Kürzer.", body="Drei Wege.", cta="Dein Weg?", hashtags=["#Geld"])
         if task == "vocab":
             return VocabResponse.model_validate_json(
                 os.environ.get("REELS_TEST_VOCAB", '{"items": []}')

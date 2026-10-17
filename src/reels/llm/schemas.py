@@ -39,3 +39,20 @@ class SuspiciousWordItem(BaseModel):
 
 class VocabResponse(BaseModel):
     items: list[SuspiciousWordItem]
+
+
+class CoverChoice(BaseModel):
+    image: int
+    headline: str
+    reason: str
+
+
+class CoverPlanResponse(BaseModel):
+    covers: list[CoverChoice]
+
+
+class PostDraft(BaseModel):
+    hook: str
+    body: str
+    cta: str
+    hashtags: list[str]

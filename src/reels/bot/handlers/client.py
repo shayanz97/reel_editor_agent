@@ -20,9 +20,11 @@ from reels.bot.keyboards import (
     APPLY,
     APPROVE,
     CHANGE,
+    COVER,
     GLOSSARY_ADD,
     GLOSSARY_SKIP,
     RETRY,
+    TEXT_OK,
     VOCAB_SUGGESTION,
     glossary_keyboard,
     parse_callback,
@@ -199,6 +201,23 @@ async def on_text(message: Message, access: Access, engine: Engine) -> None:
         await _vocab_reply(message.answer, result)
         return
 
+    package_id = await db(
+        engine, lambda s: service.publish_text_target(s, access, chat_id, reply_to)
+    )
+    if package_id is not None:
+        user = message.from_user.id if message.from_user else 0
+        decision = await db(
+            engine, lambda s: service.request_text_revision(s, package_id, user, text)
+        )
+        await message.answer(
+            {
+                Decision.OK: texts.PUBLISH_REVISING,
+                Decision.NOT_READY: texts.PUBLISH_BUSY,
+                Decision.ALREADY_APPROVED: texts.PUBLISH_DONE,
+            }.get(decision, texts.FORBIDDEN)
+        )
+        return
+
     outcome = await db(
         engine,
         lambda s: service.start_correction(
@@ -281,6 +300,28 @@ async def on_button(
             await say(texts.GLOSSARY_ASK_SAVED.format(find=answer.find, replace=answer.replace))
         else:
             await say(texts.GLOSSARY_ASK_SKIPPED)
+    elif action in (COVER, TEXT_OK):
+        if action == COVER:
+            choice = await db(engine, lambda s: service.select_cover(s, ids[0], ids[1], user_id))
+        else:
+            choice = await db(engine, lambda s: service.confirm_text(s, ids[0], user_id))
+        if choice.decision is not Decision.OK:
+            text = texts.PUBLISH_DONE if choice.decision is Decision.ALREADY_APPROVED else (
+                texts.PUBLISH_BUSY if choice.decision is Decision.NOT_READY
+                else _DECISION_TEXT[choice.decision]
+            )  # fmt: skip
+            await callback.answer(text, show_alert=True)
+            return
+        await callback.answer()
+        await say(
+            texts.PUBLISH_COVER_CHOSEN.format(number=ids[1])
+            if action == COVER
+            else texts.PUBLISH_TEXT_CONFIRMED
+        )
+        if not choice.cover_chosen:
+            await say(texts.PUBLISH_OPEN_COVER)
+        elif not choice.text_confirmed:
+            await say(texts.PUBLISH_OPEN_TEXT)
     else:  # VOCAB_KEEP / VOCAB_SUGGESTION
         use_suggestion = action == VOCAB_SUGGESTION
         vocab = await db(

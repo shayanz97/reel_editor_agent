@@ -29,6 +29,8 @@ from reels.db.models import (
     JobStatus,
     Project,
     ProjectStatus,
+    PublishPackage,
+    PublishStatus,
     Version,
     VersionStatus,
 )
@@ -38,17 +40,19 @@ from reels.db.models import (
 from reels.domain import vocab
 from reels.domain.corrections import VersionState, removed_segments, rerun_step, resolve
 from reels.domain.cutplan import CutPlan
-from reels.domain.glossary import build_prompt_hint
+from reels.domain.glossary import GlossaryTerm, apply_glossary_text, build_prompt_hint
 from reels.domain.segments import Segment, Span, number_segments, split_sentences
 from reels.domain.timeline import Timeline
 from reels.domain.words import Transcript, display_text
 from reels.llm.base import LLMError, LLMProvider, load_prompt
-from reels.llm.schemas import CorrectionResponse, VocabResponse
+from reels.llm.schemas import CorrectionResponse, CoverPlanResponse, PostDraft, VocabResponse
 from reels.log import get_logger, log_context
+from reels.media import frames
 from reels.media.ffmpeg import FFmpegError
 from reels.media.probe import ProbeResult, VideoRejectedError
 from reels.pipeline import steps
 from reels.pipeline.steps import ProjectPaths
+from reels.publish import cover_plan, covers, post_text
 from reels.settings_schema import ClientSettings, SubtitleSettings
 from reels.transcribe.base import TranscriptionEngine
 from reels.vad.silero import VoiceActivityDetector
@@ -68,6 +72,11 @@ STEP_ORDER: tuple[str, ...] = (
     "subtitles",
     "render",
 )
+# After approval: the Instagram package (covers, post text, hashtags).
+PUBLISH_ORDER: tuple[str, ...] = ("frames", "cover_plan", "covers", "post_text")
+POST_REVISE_STEP = "post_revise"
+FRAME_SAMPLES = 24  # frames extracted and scored
+FRAME_CANDIDATES = 6  # best ones shown to the vision model
 CLEANUP_STEP = "cleanup"
 CORRECTION_STEP = "correction"
 
@@ -118,10 +127,11 @@ def default_providers() -> Providers:
 
 
 def next_step(step: str) -> str | None:
-    if step not in STEP_ORDER:
-        return None
-    i = STEP_ORDER.index(step)
-    return STEP_ORDER[i + 1] if i + 1 < len(STEP_ORDER) else None
+    for order in (STEP_ORDER, PUBLISH_ORDER):
+        if step in order:
+            i = order.index(step)
+            return order[i + 1] if i + 1 < len(order) else None
+    return None
 
 
 # --- creating work ------------------------------------------------------------
@@ -167,14 +177,37 @@ def create_project(
 
 
 def rerun_from(session: Session, version_id: int, step: str) -> int | None:
-    """Run a version again from `step` on (earlier results are reused). Caller commits."""
-    if step not in STEP_ORDER:
-        raise ValueError(f"unknown step {step!r}, expected one of {', '.join(STEP_ORDER)}")
+    """Run a version again from `step` on (earlier results are reused). Caller commits.
+
+    Publish steps (frames …) rebuild the Instagram package of an approved version.
+    """
+    if step not in STEP_ORDER and step not in PUBLISH_ORDER:
+        steps_text = ", ".join((*STEP_ORDER, *PUBLISH_ORDER))
+        raise ValueError(f"unknown step {step!r}, expected one of {steps_text}")
     version = session.get(Version, version_id)
     if version is None:
         raise ValueError(f"version {version_id} not found")
+    if step in PUBLISH_ORDER:
+        package = get_package(session, version_id)
+        package.status = PublishStatus.PENDING
+        return queue.enqueue(session, version_id, step)
     version.status = VersionStatus.PENDING
     return queue.enqueue(session, version_id, step)
+
+
+def get_package(session: Session, version_id: int) -> PublishPackage:
+    package = session.scalar(select(PublishPackage).where(PublishPackage.version_id == version_id))
+    if package is None:
+        package = PublishPackage(version_id=version_id, status=PublishStatus.PENDING)
+        session.add(package)
+        session.flush()
+    return package
+
+
+def start_publishing(session: Session, version_id: int) -> int | None:
+    """After approval: create the package and queue its first step. Caller commits."""
+    get_package(session, version_id)
+    return queue.enqueue(session, version_id, PUBLISH_ORDER[0])
 
 
 # --- executing ----------------------------------------------------------------
@@ -318,6 +351,17 @@ def handle_failure(
 
 def mark_failed(session: Session, job: Job) -> None:
     if job.version_id is None:
+        return
+    if job.step in PUBLISH_ORDER:
+        # The approved video is fine; only its package could not be built.
+        get_package(session, job.version_id).status = PublishStatus.FAILED
+        return
+    if job.step == POST_REVISE_STEP:
+        # Keep the current text; the client is told the change did not work.
+        package = get_package(session, job.version_id)
+        package.revision_request = None
+        package.post = {**package.post, "revision_failed": True}
+        package.revision += 1
         return
     if job.step == CORRECTION_STEP:
         # The version itself is fine; only this correction could not be interpreted.
@@ -688,6 +732,181 @@ def step_correction(ctx: StepContext) -> None:
     )
 
 
+# --- publish steps ----------------------------------------------------------------------
+
+
+def _segments_text(ctx: StepContext, limit: int = 6000) -> tuple[str, str]:
+    """Numbered segment texts of this version (capped) and the first sentence."""
+    _, _, segments, _ = _structure(ctx, _transcript(ctx))
+    text = "\n".join(f"{s.number}: {s.text}" for s in segments)[:limit]
+    return text, segments[0].text if segments else ""
+
+
+def _confirmed_terms(ctx: StepContext) -> list[GlossaryTerm]:
+    return [t for t in load_terms(ctx.session, ctx.client.id) if t.status == "confirmed"]
+
+
+def step_frames(ctx: StepContext) -> None:
+    package = get_package(ctx.session, ctx.version.id)
+    out = ctx.paths.version(ctx.version.number).dir / "frames"
+    best = frames.collect(_original(ctx), _plan(ctx).keep, out, FRAME_SAMPLES, FRAME_CANDIDATES)
+    package.candidates = [
+        {
+            "time": f.time,
+            "path": ctx.rel(f.path),
+            "small": ctx.rel(f.path.with_name(f.path.stem + "_small.jpg")),
+            "sharpness": round(f.sharpness, 1),
+            "faces": f.faces,
+            "face_area": f.face_area,
+        }
+        for f in best
+    ]
+    ctx.metrics.update(candidates=len(best), with_faces=sum(1 for f in best if f.faces))
+
+
+def step_cover_plan(ctx: StepContext) -> None:
+    package = get_package(ctx.session, ctx.version.id)
+    candidates = package.candidates
+    if not candidates:
+        raise PermanentStepError("no cover candidates", "no_frames")
+    transcript_text, first_sentence = _segments_text(ctx)
+    terms = _confirmed_terms(ctx)
+    suggestions: list[tuple[int, str]] = []
+    llm = ctx.providers.llm()
+    if llm is not None:
+        used_before = len(llm.usage)
+        prompt = load_prompt(
+            "covers",
+            count=str(len(candidates)),
+            terms=", ".join(t.term for t in terms) or "keine",
+            caption=ctx.project.caption or "",
+            transcript=transcript_text,
+        )
+        try:
+            response = llm.structured(
+                "covers",
+                prompt,
+                CoverPlanResponse,
+                images=[ctx.path(c["small"]) for c in candidates],
+            )
+            suggestions = [(c.image, c.headline) for c in response.covers]
+        except LLMError as exc:
+            log.warning("cover_plan_llm_failed", extra={"error": str(exc)})
+        calls = llm.usage[used_before:]
+        ctx.metrics.update(
+            llm_input_tokens=sum(u.input_tokens for u in calls),
+            llm_output_tokens=sum(u.output_tokens for u in calls),
+        )
+    planned = cover_plan.plan_covers(suggestions, len(candidates), first_sentence)
+    package.covers = [
+        {
+            "number": c.number,
+            "frame": candidates[c.candidate]["path"],
+            "headline": apply_glossary_text(c.headline, terms),
+        }
+        for c in planned
+    ]
+    ctx.metrics.update(covers=len(planned), from_llm=sum(1 for _ in suggestions))
+
+
+def step_covers(ctx: StepContext) -> None:
+    package = get_package(ctx.session, ctx.version.id)
+    publish = ctx.settings.publish
+    specs = [
+        covers.CoverSpec(c["number"], ctx.path(c["frame"]), c["headline"]) for c in package.covers
+    ]
+    out_dir = ctx.paths.version(ctx.version.number).dir / "covers"
+    pngs = covers.render_covers(
+        specs,
+        covers.template_path(ctx.app.templates_dir, publish.cover_template),
+        ctx.app.fonts_dir,
+        out_dir,
+        publish.cover_text_color,
+        publish.cover_accent_color,
+    )
+    package.covers = [
+        {**c, "path": ctx.rel(png)} for c, png in zip(package.covers, pngs, strict=True)
+    ]
+    ctx.metrics.update(rendered=len(pngs), template=publish.cover_template)
+
+
+def _store_post(package: PublishPackage, post: dict[str, Any]) -> None:
+    package.post = post
+    package.post_text = post_text.compose(post)
+
+
+def step_post_text(ctx: StepContext) -> None:
+    package = get_package(ctx.session, ctx.version.id)
+    transcript_text, first_sentence = _segments_text(ctx)
+    terms = _confirmed_terms(ctx)
+    max_tags = ctx.settings.publish.max_hashtags
+    llm = ctx.providers.llm()
+    post: dict[str, Any] | None = None
+    if llm is not None:
+        used_before = len(llm.usage)
+        prompt = load_prompt(
+            "post",
+            tone=post_text.tone_description(ctx.settings.tone),
+            max_hashtags=str(max_tags),
+            terms=", ".join(t.term for t in terms) or "keine",
+            caption=ctx.project.caption or "",
+            transcript=transcript_text,
+        )
+        try:
+            draft = llm.structured("post_text", prompt, PostDraft)
+            post = post_text.finalize(
+                draft.hook, draft.body, draft.cta, draft.hashtags, terms, max_tags
+            )
+        except LLMError as exc:
+            log.warning("post_text_llm_failed", extra={"error": str(exc)})
+        calls = llm.usage[used_before:]
+        ctx.metrics.update(
+            llm_input_tokens=sum(u.input_tokens for u in calls),
+            llm_output_tokens=sum(u.output_tokens for u in calls),
+        )
+    ctx.metrics["fallback"] = post is None
+    _store_post(package, post or post_text.fallback_post(first_sentence, terms, max_tags))
+    package.revision = 1
+    package.status = PublishStatus.READY
+
+
+def step_post_revise(ctx: StepContext) -> None:
+    package = get_package(ctx.session, ctx.version.id)
+    request = package.revision_request
+    if not request:
+        ctx.metrics["request"] = None
+        return
+    llm = ctx.providers.llm()
+    if llm is None:
+        raise PermanentStepError("no LLM for text changes", "llm_unavailable")
+    terms = _confirmed_terms(ctx)
+    max_tags = ctx.settings.publish.max_hashtags
+    current = package.post
+    prompt = load_prompt(
+        "post_revise",
+        tone=post_text.tone_description(ctx.settings.tone),
+        max_hashtags=str(max_tags),
+        terms=", ".join(t.term for t in terms) or "keine",
+        hook=str(current.get("hook", "")),
+        body=str(current.get("body", "")),
+        cta=str(current.get("cta", "")),
+        hashtags=" ".join(current.get("hashtags", [])),
+        request=request,
+    )
+    used_before = len(llm.usage)
+    draft = llm.structured("post_revise", prompt, PostDraft)
+    post = post_text.finalize(draft.hook, draft.body, draft.cta, draft.hashtags, terms, max_tags)
+    _store_post(package, {**post, "revision_failed": False})
+    package.revision += 1
+    package.revision_request = None
+    calls = llm.usage[used_before:]
+    ctx.metrics.update(
+        revision=package.revision,
+        llm_input_tokens=sum(u.input_tokens for u in calls),
+        llm_output_tokens=sum(u.output_tokens for u in calls),
+    )
+
+
 def create_next_version(
     session: Session, base: Version, state: VersionState, from_step: str
 ) -> Version:
@@ -765,4 +984,13 @@ STEPS: dict[str, Callable[[StepContext], None]] = {
     "render": step_render,
 }
 assert tuple(STEPS) == STEP_ORDER
-ALL_STEPS: dict[str, Callable[[StepContext], None]] = {**STEPS, CORRECTION_STEP: step_correction}
+ALL_STEPS: dict[str, Callable[[StepContext], None]] = {
+    **STEPS,
+    CORRECTION_STEP: step_correction,
+    "frames": step_frames,
+    "cover_plan": step_cover_plan,
+    "covers": step_covers,
+    "post_text": step_post_text,
+    POST_REVISE_STEP: step_post_revise,
+}
+assert all(step in ALL_STEPS for step in PUBLISH_ORDER)

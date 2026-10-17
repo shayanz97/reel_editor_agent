@@ -35,7 +35,8 @@ uv sync --extra mac           # zusätzlich mlx-whisper (Transkription auf der A
 cp .env.example .env          # danach Werte eintragen, siehe unten
 ```
 
-Playwright (Cover und Textkarten, ab Etappe 5):
+Playwright (Cover und Textkarten): Das Python-Paket kommt mit `uv sync`, den Browser einmalig
+laden (gut 100 MB, nach `~/Library/Caches/ms-playwright`):
 
 ```bash
 uv run playwright install chromium
@@ -164,6 +165,17 @@ uv run python -m reels.worker                  # Worker (Terminal 2)
   mit der richtigen Schreibweise); bis alles beantwortet ist, wartet die Pipeline vor dem Schnitt.
   Antworten landen als *Vorschlag* im Wörterbuch (wirken erst nach `/begriff_ok`). Ohne
   Telegram-Chat (`reels process`) wird nur protokolliert, nicht gewartet.
+- Veröffentlichungspaket (nach „Freigeben“, Video kommt sofort): Job-Kette
+  `frames → cover_plan → covers → post_text`. Standbilder aus dem Original (ohne Untertitel),
+  per OpenCV nach Schärfe und Gesichtern vorsortiert; das Vision-Modell wählt 3 Bilder und
+  3 Überschriften; Cover werden aus einer HTML/CSS-Vorlage mit Playwright gerendert
+  (1080 × 1920). Dazu Beitragstext (Einstieg, Mehrwert, Handlungsaufforderung) und Hashtags im
+  Ton des Kunden, Schreibweisen aus dem Wörterbuch. Der Kunde wählt ein Cover per Button,
+  ändert den Text per Freitext und bekommt dann Cover (voll aufgelöst) und Text als Paket.
+- Cover-Vorlage pro Kunde: `reels client set <kunde> publish.cover_template=<ordner>`,
+  Farben über `publish.cover_text_color` / `publish.cover_accent_color`, Hashtag-Anzahl über
+  `publish.max_hashtags`. Vorlagen: [assets/templates/cover/README.md](assets/templates/cover/README.md).
+- Paket neu erzeugen: `uv run reels jobs rerun <version_id> --from frames` (oder `--from covers`).
 - Wörterbuch im Bot: `/woerterbuch`, `/begriff_neu Begriff = falsch1, falsch2`,
   `/begriff_aendern …`, `/begriff_loeschen …`, `/begriff_ok …`, `/begriffe` (mehrere Zeilen),
   `/begriffe_export` (CSV).

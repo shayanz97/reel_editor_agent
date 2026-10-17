@@ -4,7 +4,7 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 4 abgeschlossen** (mit Fakes und einem echten LLM-Test geprüft) – nächste: Etappe 5.
+Status: **Etappe 5** – Code fertig und mit Fakes getestet; Prüfung mit echtem LLM und Telegram steht aus.
 
 Offene Punkte früherer Etappen:
 - Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)
@@ -143,13 +143,13 @@ Offene Punkte früherer Etappen:
 
 **Ziel:** Nach Freigabe bekommt der Kunde drei Cover, einen Beitragstext und Hashtags zur Auswahl.
 
-- [ ] 5.1 `media/frames.py`: Kandidaten-Frames extrahieren, nach Schärfe filtern, Gesichtserkennung (OpenCV) zur Vorauswahl
-- [ ] 5.2 LLM wählt 3 Frames (Bildeingabe) und schlägt 3 unterschiedliche Überschriften vor
-- [ ] 5.3 Neutrale HTML/CSS-Standardvorlage in `assets/templates/cover/`, Platzhalter für Frame, Überschrift, Farben, Schrift
-- [ ] 5.4 `publish/covers.py`: Rendern mit Playwright als PNG 1080 × 1920
-- [ ] 5.5 `publish/post_text.py`: Beitragstext (Einstieg, Mehrwert, Handlungsaufforderung), Ton aus `ClientSettings.tone`, Schreibweisen aus dem Wörterbuch
-- [ ] 5.6 `publish/hashtags.py`: Vorschläge, ohne Reichweitenversprechen
-- [ ] 5.7 Bot: Cover-Auswahl per Button, Textkorrektur per Freitext, Ausgabe von MP4, Cover und Text
+- [x] 5.1 `media/frames.py`: Kandidaten-Frames extrahieren, nach Schärfe filtern, Gesichtserkennung (OpenCV) zur Vorauswahl
+- [x] 5.2 LLM wählt 3 Frames (Bildeingabe) und schlägt 3 unterschiedliche Überschriften vor
+- [x] 5.3 Neutrale HTML/CSS-Standardvorlage in `assets/templates/cover/`, Platzhalter für Frame, Überschrift, Farben, Schrift
+- [x] 5.4 `publish/covers.py`: Rendern mit Playwright als PNG 1080 × 1920
+- [x] 5.5 `publish/post_text.py`: Beitragstext (Einstieg, Mehrwert, Handlungsaufforderung), Ton aus `ClientSettings.tone`, Schreibweisen aus dem Wörterbuch
+- [x] 5.6 `publish/hashtags.py`: Vorschläge, ohne Reichweitenversprechen
+- [x] 5.7 Bot: Cover-Auswahl per Button, Textkorrektur per Freitext, Ausgabe von MP4, Cover und Text
 
 **Abnahme**
 - Nach Freigabe kommen automatisch 3 verschiedene Cover und ein Text

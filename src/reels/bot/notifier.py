@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session
 
 from reels.bot import service, texts
 from reels.bot.common import FILE_TIMEOUT_S, db
-from reels.bot.keyboards import correction_keyboard, preview_keyboard, vocab_keyboard
+from reels.bot.keyboards import (
+    correction_keyboard,
+    cover_keyboard,
+    preview_keyboard,
+    text_keyboard,
+    vocab_keyboard,
+)
 from reels.bot.service import (
     AdminJobNotice,
     CorrectionFailedNotice,
@@ -29,6 +35,10 @@ from reels.bot.service import (
     Notice,
     PreviewNotice,
     ProcessingNotice,
+    PublishFailedNotice,
+    PublishFinalNotice,
+    PublishOfferNotice,
+    PublishTextNotice,
     VocabNotice,
 )
 from reels.config import Settings
@@ -77,6 +87,35 @@ class Notifier:
         match notice:
             case VocabNotice():
                 return await self._vocab(notice)
+            case PublishOfferNotice():
+                return await self._offer(notice)
+            case PublishTextNotice():
+                template = (
+                    texts.PUBLISH_TEXT_REVISION_FAILED
+                    if notice.failed
+                    else texts.PUBLISH_TEXT_REVISED
+                )
+                sent = await self.bot.send_message(
+                    notice.chat_id,
+                    template.format(text=notice.text)[: texts.TELEGRAM_TEXT_LIMIT],
+                    reply_markup=text_keyboard(notice.package_id),
+                )
+                return sent.message_id
+            case PublishFinalNotice():
+                await self.bot.send_document(
+                    notice.chat_id,
+                    FSInputFile(notice.cover, filename="cover.png"),
+                    caption=texts.PUBLISH_FINAL,
+                    request_timeout=FILE_TIMEOUT_S,
+                )
+                await self.bot.send_message(notice.chat_id, texts.PUBLISH_FINAL_TEXT)
+                await self.bot.send_message(
+                    notice.chat_id, notice.text[: texts.TELEGRAM_TEXT_LIMIT]
+                )
+                return None
+            case PublishFailedNotice():
+                await self.bot.send_message(notice.chat_id, texts.PUBLISH_FAILED)
+                return None
             case ProcessingNotice():
                 with log_context(project_id=notice.project_id):
                     return await self._status(
@@ -129,6 +168,23 @@ class Notifier:
                     ),
                 )
                 return None
+
+    async def _offer(self, n: PublishOfferNotice) -> int:
+        """Intro, one photo per cover with its button, then the post text."""
+        await self.bot.send_message(n.chat_id, texts.PUBLISH_INTRO)
+        for number, png, headline in n.covers:
+            await self.bot.send_photo(
+                n.chat_id,
+                FSInputFile(png),
+                caption=texts.PUBLISH_COVER_CAPTION.format(number=number, headline=headline),
+                reply_markup=cover_keyboard(n.package_id, number),
+            )
+        sent = await self.bot.send_message(
+            n.chat_id,
+            texts.PUBLISH_TEXT.format(text=n.text)[: texts.TELEGRAM_TEXT_LIMIT],
+            reply_markup=text_keyboard(n.package_id),
+        )
+        return sent.message_id
 
     async def _vocab(self, n: VocabNotice) -> dict[int, int]:
         """Intro + one message per word, each with its own buttons."""
@@ -186,6 +242,10 @@ def _key(notice: Notice) -> tuple[str, int]:
     match notice:
         case VocabNotice():
             return ("vocab", notice.version_id)
+        case PublishOfferNotice() | PublishFinalNotice() | PublishFailedNotice():
+            return (type(notice).__name__, notice.package_id)
+        case PublishTextNotice():
+            return ("publish_text", notice.package_id * 1000 + notice.revision)
         case ProcessingNotice():
             return ("processing", notice.project_id)
         case PreviewNotice():

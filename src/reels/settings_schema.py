@@ -36,6 +36,16 @@ class BrollSettings(BaseModel):
     max_coverage: float = Field(default=0.25, ge=0.0, le=1.0)
 
 
+class PublishSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # Folder name under assets/templates/cover/ (exchangeable per client, no code change).
+    cover_template: str = Field(default="default", pattern=r"^[a-z0-9_-]+$")
+    cover_text_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
+    cover_accent_color: str = Field(default="#FFD60A", pattern=r"^#[0-9A-Fa-f]{6}$")
+    max_hashtags: int = Field(default=5, ge=0, le=30)  # Instagram allows at most 30
+
+
 class ClientSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -51,6 +61,7 @@ class ClientSettings(BaseModel):
     loudness_lufs: float = -14.0
     subtitle: SubtitleSettings = Field(default_factory=SubtitleSettings)
     broll: BrollSettings = Field(default_factory=BrollSettings)
+    publish: PublishSettings = Field(default_factory=PublishSettings)
     retention_days: int = Field(default=30, ge=1)
     platform: Literal["instagram"] = "instagram"
     tone: str = "du_fachlich"
