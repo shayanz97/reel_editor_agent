@@ -35,14 +35,15 @@ from reels.db.models import (
 from reels.db.models import (
     Transcript as TranscriptRow,
 )
+from reels.domain import vocab
 from reels.domain.corrections import VersionState, removed_segments, rerun_step, resolve
 from reels.domain.cutplan import CutPlan
 from reels.domain.glossary import build_prompt_hint
-from reels.domain.segments import Segment, Span
+from reels.domain.segments import Segment, Span, number_segments, split_sentences
 from reels.domain.timeline import Timeline
 from reels.domain.words import Transcript, display_text
-from reels.llm.base import LLMProvider, load_prompt
-from reels.llm.schemas import CorrectionResponse
+from reels.llm.base import LLMError, LLMProvider, load_prompt
+from reels.llm.schemas import CorrectionResponse, VocabResponse
 from reels.log import get_logger, log_context
 from reels.media.ffmpeg import FFmpegError
 from reels.media.probe import ProbeResult, VideoRejectedError
@@ -59,6 +60,7 @@ STEP_ORDER: tuple[str, ...] = (
     "audio",
     "transcribe",
     "glossary",
+    "vocab",
     "vad",
     "cutplan",
     "segments",
@@ -190,6 +192,9 @@ class StepContext:
     paths: ProjectPaths
     providers: Providers
     metrics: dict[str, Any] = field(default_factory=dict)
+    # Set by a step that must wait for the client (vocab questions): the next step is not
+    # queued now; the bot queues it once all answers are in.
+    hold: bool = False
 
     def path(self, rel: str) -> Path:
         return self.app.data_dir / rel
@@ -223,6 +228,7 @@ def execute_job(
         ):
             start = time.perf_counter()
             try:
+                hold = False
                 if step == CLEANUP_STEP:
                     from reels.pipeline.cleanup import cleanup_expired
 
@@ -245,11 +251,12 @@ def execute_job(
                     )
                     ALL_STEPS[step](ctx)
                     metrics = ctx.metrics
+                    hold = ctx.hold
                 metrics["runtime_s"] = round(time.perf_counter() - start, 3)
                 metrics["attempt"] = job.attempts
                 queue.complete(session, job, metrics)
                 following = next_step(step) if version_id is not None else None
-                if following is not None:
+                if following is not None and not hold:
                     queue.enqueue(session, version_id, following)
                 session.commit()
             except Exception as exc:
@@ -452,6 +459,71 @@ def step_glossary(ctx: StepContext) -> None:
     if not counted_before:
         add_hits(ctx.session, ctx.client.id, hits)
     ctx.metrics.update(hits=dict(hits), hits_counted=not counted_before)
+
+
+def step_vocab(ctx: StepContext) -> None:
+    """4.8: let the LLM flag probably misheard words; the client is asked before cutting."""
+    existing = ctx.version.edits.get("vocab")
+    if existing is not None:
+        # Asked before (e.g. rerun): wait only if answers are still missing.
+        open_questions = [q for q in existing.get("questions", []) if q.get("answer") is None]
+        ctx.hold = bool(open_questions) and ctx.project.telegram_chat_id is not None
+        ctx.metrics.update(reused=True, open_questions=len(open_questions))
+        return
+    llm = ctx.providers.llm()
+    if llm is None:
+        ctx.metrics.update(skipped="no_llm")
+        return
+    transcript = _transcript(ctx)
+    state = version_state(ctx.version)
+    spans = split_sentences(transcript.words)
+    segments = number_segments(
+        transcript.words, spans, {w.id for w in transcript.words}, state.overlay
+    )
+    terms = load_terms(ctx.session, ctx.client.id)
+    prompt = load_prompt(
+        "vocab",
+        known=", ".join(t.term for t in terms) or "keine",
+        caption=ctx.project.caption or "",
+        transcript=vocab.transcript_lines(segments, transcript.words, state.overlay),
+    )
+    used_before = len(llm.usage)
+    try:
+        response = llm.structured("vocab", prompt, VocabResponse)
+    except LLMError as exc:
+        # The check helps, but must not block the video.
+        log.warning("vocab_failed", extra={"error": str(exc)})
+        ctx.metrics.update(skipped="llm_error")
+        return
+    items = [
+        vocab.SuspiciousWord(
+            segment=i.segment,
+            first_word=i.first_word_id,
+            last_word=i.last_word_id,
+            suggestion=i.suggestion,
+        )
+        for i in response.items
+    ]
+    questions = vocab.select_questions(
+        items, transcript.words, segments, state.overlay, vocab.known_tokens(terms)
+    )
+    ctx.version.edits = {
+        **ctx.version.edits,
+        "vocab": {
+            "questions": [q.model_dump(mode="json") for q in questions],
+            "notified_at": None,
+        },
+    }
+    # Without a Telegram chat (CLI) nobody can answer: record, but do not wait.
+    ctx.hold = bool(questions) and ctx.project.telegram_chat_id is not None
+    calls = llm.usage[used_before:]
+    ctx.metrics.update(
+        flagged=len(response.items),
+        asked=len(questions),
+        waiting=ctx.hold,
+        llm_input_tokens=sum(u.input_tokens for u in calls),
+        llm_output_tokens=sum(u.output_tokens for u in calls),
+    )
 
 
 def step_vad(ctx: StepContext) -> None:
@@ -684,6 +756,7 @@ STEPS: dict[str, Callable[[StepContext], None]] = {
     "audio": step_audio,
     "transcribe": step_transcribe,
     "glossary": step_glossary,
+    "vocab": step_vocab,
     "vad": step_vad,
     "cutplan": step_cutplan,
     "segments": step_segments,

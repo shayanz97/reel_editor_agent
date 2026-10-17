@@ -7,11 +7,12 @@ import io
 from collections import Counter
 from collections.abc import Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from reels.db.models import GlossaryEntry, GlossaryStatus
 from reels.domain.glossary import GlossaryTerm
+from reels.domain.words import normalize_token
 
 CSV_FIELDS = ["term", "variants", "category", "note", "highlight", "status"]
 VARIANT_SEP = "|"
@@ -127,3 +128,77 @@ def export_csv(terms: Iterable[GlossaryTerm]) -> str:
             }
         )
     return out.getvalue()
+
+
+# --- single entries (bot commands, corrections) ----------------------------------
+
+
+def find_entry(session: Session, client_id: int, term: str) -> GlossaryEntry | None:
+    """Entry by term, ignoring case."""
+    return session.scalar(
+        select(GlossaryEntry).where(
+            GlossaryEntry.client_id == client_id,
+            func.lower(GlossaryEntry.term) == term.strip().lower(),
+        )
+    )
+
+
+def _merge_variants(entry: GlossaryEntry, variants: Iterable[str]) -> bool:
+    known = {normalize_token(v) for v in entry.variants} | {normalize_token(entry.term)}
+    added = [v.strip() for v in variants if v.strip() and normalize_token(v) not in known]
+    if added:
+        entry.variants = [*entry.variants, *dict.fromkeys(added)]
+    return bool(added)
+
+
+def add_term(
+    session: Session,
+    client_id: int,
+    term: str,
+    variants: Iterable[str] = (),
+    *,
+    status: GlossaryStatus = GlossaryStatus.CONFIRMED,
+    source: str = "bot",
+) -> tuple[GlossaryEntry, bool]:
+    """Create the term or add variants to it. A confirmed request confirms a suggestion.
+
+    Returns (entry, created).
+    """
+    entry = find_entry(session, client_id, term)
+    created = entry is None
+    if entry is None:
+        entry = GlossaryEntry(
+            client_id=client_id, term=term.strip(), variants=[], source=source, status=status
+        )
+        session.add(entry)
+    elif status is GlossaryStatus.CONFIRMED:
+        entry.status = GlossaryStatus.CONFIRMED
+    _merge_variants(entry, variants)
+    session.flush()
+    return entry, created
+
+
+def set_variants(
+    session: Session, client_id: int, term: str, variants: Iterable[str]
+) -> GlossaryEntry | None:
+    entry = find_entry(session, client_id, term)
+    if entry is None:
+        return None
+    entry.variants = []
+    _merge_variants(entry, variants)
+    return entry
+
+
+def confirm_term(session: Session, client_id: int, term: str) -> GlossaryEntry | None:
+    entry = find_entry(session, client_id, term)
+    if entry is not None:
+        entry.status = GlossaryStatus.CONFIRMED
+    return entry
+
+
+def delete_term(session: Session, client_id: int, term: str) -> bool:
+    entry = find_entry(session, client_id, term)
+    if entry is None:
+        return False
+    session.delete(entry)
+    return True

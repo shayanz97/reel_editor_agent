@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from reels.bot import service, texts
 from reels.bot.common import FILE_TIMEOUT_S, db
-from reels.bot.keyboards import correction_keyboard, preview_keyboard
+from reels.bot.keyboards import correction_keyboard, preview_keyboard, vocab_keyboard
 from reels.bot.service import (
     AdminJobNotice,
     CorrectionFailedNotice,
@@ -29,6 +29,7 @@ from reels.bot.service import (
     Notice,
     PreviewNotice,
     ProcessingNotice,
+    VocabNotice,
 )
 from reels.config import Settings
 from reels.log import get_logger, log_context
@@ -72,8 +73,10 @@ class Notifier:
             sent += 1
         return sent
 
-    async def send(self, notice: Notice) -> int | None:
+    async def send(self, notice: Notice) -> int | dict[int, int] | None:
         match notice:
+            case VocabNotice():
+                return await self._vocab(notice)
             case ProcessingNotice():
                 with log_context(project_id=notice.project_id):
                     return await self._status(
@@ -127,6 +130,19 @@ class Notifier:
                 )
                 return None
 
+    async def _vocab(self, n: VocabNotice) -> dict[int, int]:
+        """Intro + one message per word, each with its own buttons."""
+        await self.bot.send_message(n.chat_id, texts.VOCAB_INTRO.format(count=len(n.questions)))
+        sent: dict[int, int] = {}
+        for q in n.questions:
+            message = await self.bot.send_message(
+                n.chat_id,
+                texts.VOCAB_QUESTION.format(segment=q.segment, context=q.context, text=q.text),
+                reply_markup=vocab_keyboard(n.version_id, q.id, q.suggestion),
+            )
+            sent[q.id] = message.message_id
+        return sent
+
     async def _status(self, chat_id: int, message_id: int | None, text: str) -> int:
         """Edit the project's status message; send a new one if that is not possible.
 
@@ -168,6 +184,8 @@ class Notifier:
 def _key(notice: Notice) -> tuple[str, int]:
     """Stable identity of a notice (the dataclasses hold lists, so they are not hashable)."""
     match notice:
+        case VocabNotice():
+            return ("vocab", notice.version_id)
         case ProcessingNotice():
             return ("processing", notice.project_id)
         case PreviewNotice():
@@ -180,7 +198,7 @@ def _key(notice: Notice) -> tuple[str, int]:
             return ("correction", notice.correction_id)
 
 
-def _marker(notice: Notice, message_id: int | None) -> Callable[[Session], None]:
+def _marker(notice: Notice, message_id: int | dict[int, int] | None) -> Callable[[Session], None]:
     return lambda session: service.mark_notice_sent(session, notice, message_id)
 
 

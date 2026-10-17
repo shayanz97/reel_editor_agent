@@ -18,6 +18,7 @@ from reels.domain.corrections import (
     SplitSegment,
     Unhighlight,
 )
+from reels.domain.glossary import GlossaryTerm
 from reels.domain.segments import Segment
 
 TELEGRAM_TEXT_LIMIT = 4096
@@ -65,6 +66,27 @@ CHANGE_PROMPT = (
 CORRECTION_STARTED = "⏳ Ich schaue mir deine Änderungen an …"
 CORRECTION_BUSY = "Einen Moment, ich bin noch mit deiner letzten Änderung beschäftigt."
 CORRECTION_NO_PROJECT = "Ich habe gerade kein Video, das du ändern kannst. Schick mir ein Video."
+GLOSSARY_ASK = "Soll „{find}“ künftig immer zu „{replace}“ korrigiert werden?"
+BUTTON_GLOSSARY_YES = "✅ Ja, immer"
+BUTTON_GLOSSARY_NO = "Nur hier"
+GLOSSARY_ASK_SAVED = "📖 Gespeichert: „{find}“ wird ab dem nächsten Video zu „{replace}“."
+GLOSSARY_ASK_SKIPPED = "Okay, nur in diesem Video."
+VOCAB_INTRO = (
+    "Bevor ich schneide: Bei {count} Wörtern bin ich mir nicht sicher, wie sie richtig "
+    "geschrieben werden. Tippe auf einen Button oder antworte auf die Frage mit der richtigen "
+    "Schreibweise."
+)
+VOCAB_QUESTION = "Satz {segment}: „{context}“\n\nIst „{text}“ richtig geschrieben?"
+BUTTON_VOCAB_KEEP = "✅ Passt so"
+BUTTON_VOCAB_SUGGESTION = "✏️ {suggestion}"
+VOCAB_KEPT = "👍 „{text}“ bleibt so."
+VOCAB_FIXED = "👍 Notiert: „{text}“ → „{answer}“."
+VOCAB_DONE = "Danke! Ich mache jetzt mit dem Schnitt weiter."
+VOCAB_ALREADY = "Diese Frage ist schon beantwortet."
+VOCAB_REPLY_HINT = (
+    "Ich warte noch auf deine Antworten zu den markierten Wörtern. Tippe auf einen Button "
+    "oder antworte direkt auf die jeweilige Frage."
+)
 CORRECTION_SUMMARY = "Ich habe verstanden (bezogen auf Version {number}):"
 CORRECTION_CONFIRM = "Soll ich das so umsetzen?"
 BUTTON_APPLY = "✅ Ausführen"
@@ -179,18 +201,8 @@ def failure_text(code: str | None, details: dict[str, float]) -> str:
     }.get(code or "", FAILED_GENERIC)
 
 
-def preview_messages(
-    segments: Sequence[Segment],
-    removed: Sequence[str] = (),
-    limit: int = TELEGRAM_TEXT_LIMIT,
-) -> list[str]:
-    """Numbered sentences (+ removed ones as E1 …) and the question, split below the limit."""
-    lines = ["Sätze in dieser Version:", ""]
-    lines += [f"{s.number}. {s.text}" for s in segments]
-    if removed:
-        lines += ["", "Entfernte Sätze:"]
-        lines += [f"E{n}. {text}" for n, text in enumerate(removed, start=1)]
-    lines += ["", PREVIEW_QUESTION]
+def chunk_lines(lines: Sequence[str], limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+    """Join lines into as few messages as possible, each below Telegram's limit."""
     messages: list[str] = []
     current = ""
     for line in lines:
@@ -204,6 +216,64 @@ def preview_messages(
             current = candidate
     messages.append(current)
     return messages
+
+
+def preview_messages(
+    segments: Sequence[Segment],
+    removed: Sequence[str] = (),
+    limit: int = TELEGRAM_TEXT_LIMIT,
+) -> list[str]:
+    """Numbered sentences (+ removed ones as E1 …) and the question, split below the limit."""
+    lines = ["Sätze in dieser Version:", ""]
+    lines += [f"{s.number}. {s.text}" for s in segments]
+    if removed:
+        lines += ["", "Entfernte Sätze:"]
+        lines += [f"E{n}. {text}" for n, text in enumerate(removed, start=1)]
+    lines += ["", PREVIEW_QUESTION]
+    return chunk_lines(lines, limit)
+
+
+# --- glossary ----------------------------------------------------------------------
+
+GLOSSARY_HELP = (
+    "📖 Wörterbuch-Befehle:\n"
+    "/woerterbuch – anzeigen\n"
+    "/begriff_neu Begriff = falsche Schreibweise, … – Begriff anlegen\n"
+    "/begriff_aendern Begriff = … – falsche Schreibweisen ersetzen\n"
+    "/begriff_loeschen Begriff – löschen\n"
+    "/begriff_ok Begriff – Vorschlag bestätigen\n"
+    "/begriffe – mehrere auf einmal, ein Begriff pro Zeile\n"
+    "/begriffe_export – als CSV-Datei"
+)
+GLOSSARY_EMPTY = "Dein Wörterbuch ist noch leer. Neuer Begriff: /begriff_neu Kubernetes = Kubanetis"
+GLOSSARY_HEADER = "📖 Dein Wörterbuch ({count} Begriffe):"
+GLOSSARY_ADDED = "✅ „{term}“ gespeichert. Gilt ab dem nächsten Video."
+GLOSSARY_UPDATED = "✅ „{term}“ aktualisiert."
+GLOSSARY_NOT_FOUND = "„{term}“ steht nicht in deinem Wörterbuch."
+GLOSSARY_DELETED = "🗑️ „{term}“ gelöscht."
+GLOSSARY_CONFIRMED = "✅ „{term}“ bestätigt. Wird ab dem nächsten Video angewendet."
+GLOSSARY_IMPORTED = "✅ {added} Begriffe neu, {updated} aktualisiert."
+GLOSSARY_UNREADABLE = "Nicht verstanden: {lines}"
+GLOSSARY_USAGE_NEW = "So geht’s: /begriff_neu Kubernetes = Kubanetis, Cuber Netties"
+GLOSSARY_USAGE_CHANGE = "So geht’s: /begriff_aendern Kubernetes = Kubanetis, Kuberneets"
+GLOSSARY_USAGE_TERM = "So geht’s: {command} Kubernetes"
+GLOSSARY_USAGE_LIST = (
+    "Schick die Begriffe direkt hinter /begriffe, einen pro Zeile, z. B.:\n"
+    "/begriffe\nKubernetes = Kubanetis\nDocker"
+)
+GLOSSARY_EXPORT_CAPTION = "📖 Dein Wörterbuch als CSV."
+
+
+def glossary_lines(terms: Sequence[GlossaryTerm]) -> list[str]:
+    lines = [GLOSSARY_HEADER.format(count=len(terms)), ""]
+    for t in terms:
+        line = f"• {t.term}"
+        if t.variants:
+            line += " ← " + ", ".join(t.variants)
+        if t.status == "suggested":
+            line += f" (Vorschlag, bestätigen: /begriff_ok {t.term})"
+        lines.append(line)
+    return lines
 
 
 # --- admin -----------------------------------------------------------------------

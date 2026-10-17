@@ -27,3 +27,15 @@ class HighlightPlan(BaseModel):
 class CorrectionResponse(BaseModel):
     operations: list[AnyOperation]
     clarification: str | None
+
+
+class SuspiciousWordItem(BaseModel):
+    segment: int
+    first_word_id: int
+    last_word_id: int
+    suggestion: str | None
+    reason: str
+
+
+class VocabResponse(BaseModel):
+    items: list[SuspiciousWordItem]

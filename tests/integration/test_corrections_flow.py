@@ -108,7 +108,9 @@ def test_example_text_fix_and_delete_creates_version_2(
     apply_button, retry_button = summary.reply_markup.inline_keyboard[0]
 
     _click(bot, access, engine, apply_button.callback_data)
-    assert bot.messages[-1].text == texts.CORRECTION_APPLIED.format(number=2)
+    assert bot.messages[-2].text == texts.CORRECTION_APPLIED.format(number=2)
+    glossary_question = bot.messages[-1]
+    assert glossary_question.text == texts.GLOSSARY_ASK.format(find="wort6", replace="Kubernetes")
     assert _jobs(engine, 2) == ["cutplan"]
     _run()
     # Transcription never runs again; segment deletion re-cuts.
@@ -243,3 +245,50 @@ def test_without_llm_the_client_is_told(
     _run()  # REELS_TEST_LLM not set: no LLM
     _go(_tick(bot, engine))
     assert bot.messages[-1].text == texts.CORRECTION_UNAVAILABLE
+
+
+def test_confirmed_glossary_fix_applies_to_next_video(
+    ready: tuple[FakeBot, service.Access], engine: Engine, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:  # fmt: skip
+    """4.7 acceptance: „Ja, immer“ -> the next video gets the spelling automatically."""
+    bot, access = ready
+    _llm_answers(monkeypatch, {"operations": [
+        {"op": "replace_text", "segment": 2, "find": "wort6", "replace": "Kubernetes"},
+    ], "clarification": None})  # fmt: skip
+    _say(bot, access, engine, "wort6 heißt Kubernetes", 100)
+    _run()
+    _go(_tick(bot, engine))
+    _click(bot, access, engine, bot.messages[-1].reply_markup.inline_keyboard[0][0].callback_data)
+    question = bot.messages[-1]
+    yes, no = question.reply_markup.inline_keyboard[0]
+    _click(bot, access, engine, yes.callback_data)
+    assert bot.messages[-1].text == texts.GLOSSARY_ASK_SAVED.format(
+        find="wort6", replace="Kubernetes"
+    )
+    assert _click(bot, access, engine, no.callback_data).alerts == [None]  # no error after yes
+
+    from reels.db.glossary import load_terms
+
+    with Session(engine) as s:
+        (term,) = load_terms(s, access.client_id)
+    assert (term.term, term.variants, term.status, term.source) == (
+        "Kubernetes", ["wort6"], "confirmed", "correction",
+    )  # fmt: skip
+
+    # Next video: same misheard word, corrected without asking.
+    from tests.integration.bot_fakes import CONTAINER
+
+    upload = Path(get_settings().telegram_files_host_path) / "TOKEN" / "documents" / "file_2.mp4"
+    shutil.copy(tmp_path / "src.mp4", upload)
+    bot.file_path = f"{CONTAINER}/TOKEN/documents/file_2.mp4"
+    _go(
+        client.on_document(
+            FakeMessage(ME, 200, document=_doc()), bot, access, engine, get_settings()
+        )
+    )  # type: ignore[arg-type]
+    _run()
+    with Session(engine) as s:
+        newest = s.scalars(select(Version).order_by(Version.id.desc())).first()
+        assert newest is not None and newest.number == 1
+        assert newest.text_overlay.get("6") == "Kubernetes"

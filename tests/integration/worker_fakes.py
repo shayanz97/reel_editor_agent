@@ -6,6 +6,7 @@ REELS_TEST_CALLS    file that gets one line per transcribe call (counts across p
 REELS_TEST_NOTIFY   file that gets one line per admin notification
 REELS_TEST_LLM      1 -> fake LLM (highlights: first word of each sentence)
 REELS_TEST_CORRECTION  JSON answer of the fake LLM for corrections
+REELS_TEST_VOCAB    JSON answer of the fake LLM for the vocabulary check (default: nothing)
 REELS_TEST_PROMPTS  file that gets every prompt the fake LLM receives
 """
 
@@ -19,7 +20,7 @@ from typing import Any
 
 from reels.domain.words import Transcript
 from reels.llm.base import LLMUsage
-from reels.llm.schemas import CorrectionResponse, HighlightPlan, SegmentHighlight
+from reels.llm.schemas import CorrectionResponse, HighlightPlan, SegmentHighlight, VocabResponse
 from reels.pipeline.runner import Providers
 from reels.transcribe.base import FakeEngine
 from reels.vad.silero import FixedVad
@@ -75,6 +76,10 @@ class FakeLLM:
                 fh.write(prompt + "\n=====\n")
         if task == "corrections":
             return CorrectionResponse.model_validate_json(os.environ["REELS_TEST_CORRECTION"])
+        if task == "vocab":
+            return VocabResponse.model_validate_json(
+                os.environ.get("REELS_TEST_VOCAB", '{"items": []}')
+            )
         items = []
         for line in prompt.splitlines():
             number, sep, rest = line.partition(": [")

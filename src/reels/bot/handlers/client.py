@@ -15,7 +15,18 @@ from sqlalchemy import Engine
 from reels.bot import service, texts
 from reels.bot.common import FILE_TIMEOUT_S, db, notify_admin
 from reels.bot.files import looks_like_video, to_host_path
-from reels.bot.keyboards import APPLY, APPROVE, CHANGE, parse_callback
+from reels.bot.handlers import glossary
+from reels.bot.keyboards import (
+    APPLY,
+    APPROVE,
+    CHANGE,
+    GLOSSARY_ADD,
+    GLOSSARY_SKIP,
+    RETRY,
+    VOCAB_SUGGESTION,
+    glossary_keyboard,
+    parse_callback,
+)
 from reels.bot.service import Access, CorrectionStart, Decision
 from reels.config import Settings
 from reels.log import get_logger, log_context
@@ -165,18 +176,35 @@ _START_TEXT = {
 
 
 async def on_text(message: Message, access: Access, engine: Engine) -> None:
-    """Free text = correction request for the preview it replies to (or the newest one)."""
+    """Free text: an answer to a vocabulary question, else a correction request."""
     text = (message.text or "").strip()
     if not text:
         await message.answer(texts.NOT_A_VIDEO)
         return
+    chat_id = message.chat.id
     reply_to = message.reply_to_message.message_id if message.reply_to_message else None
+    target = await db(engine, lambda s: service.vocab_target(s, access, chat_id, reply_to))
+    if target is not None:
+        if target.question_id is None:
+            await message.answer(texts.VOCAB_REPLY_HINT)
+            return
+        question_id = target.question_id
+        user_id = message.from_user.id if message.from_user else 0
+        result = await db(
+            engine,
+            lambda s: service.answer_vocab(
+                s, target.version_id, question_id, user_id, spelling=text
+            ),
+        )
+        await _vocab_reply(message.answer, result)
+        return
+
     outcome = await db(
         engine,
         lambda s: service.start_correction(
             s,
             access,
-            chat_id=message.chat.id,
+            chat_id=chat_id,
             message_id=message.message_id,
             text=text,
             reply_to=reply_to,
@@ -185,6 +213,18 @@ async def on_text(message: Message, access: Access, engine: Engine) -> None:
     log.info("correction_request", extra={"outcome": outcome.value})
     if outcome is not CorrectionStart.DUPLICATE:
         await message.answer(_START_TEXT[outcome])
+
+
+async def _vocab_reply(send: Callable[[str], Awaitable[Any]], result: service.VocabAnswer) -> None:
+    if result.decision is not Decision.OK:
+        await send(texts.VOCAB_ALREADY)
+        return
+    if result.answer is None:
+        await send(texts.VOCAB_KEPT.format(text=result.question))
+    else:
+        await send(texts.VOCAB_FIXED.format(text=result.question, answer=result.answer))
+    if result.finished:
+        await send(texts.VOCAB_DONE)
 
 
 async def _drop_keyboard(callback: CallbackQuery) -> None:
@@ -200,28 +240,59 @@ async def on_button(
     if parsed is None:
         await callback.answer()
         return
-    action, target_id = parsed
+    action, ids = parsed
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id if callback.message is not None else user_id
+
+    async def say(text: str) -> None:
+        await bot.send_message(chat_id, text)
+
     if action == APPROVE:
-        await _approve(callback, bot, engine, app, target_id, user_id, chat_id)
+        await _approve(callback, bot, engine, app, ids[0], user_id, chat_id)
     elif action == CHANGE:
-        result = await db(engine, lambda s: service.change_request(s, target_id, user_id))
+        result = await db(engine, lambda s: service.change_request(s, ids[0], user_id))
         if result.decision is not Decision.OK:
             await callback.answer(_DECISION_TEXT[result.decision], show_alert=True)
             return
         await callback.answer()
-        await bot.send_message(chat_id, texts.CHANGE_PROMPT)
+        await say(texts.CHANGE_PROMPT)
     elif action == APPLY:
-        await _apply(callback, bot, engine, app, target_id, user_id, chat_id)
-    else:  # RETRY
-        retry = await db(engine, lambda s: service.reject_correction(s, target_id, user_id))
+        await _apply(callback, bot, engine, app, ids[0], user_id, chat_id)
+    elif action == RETRY:
+        retry = await db(engine, lambda s: service.reject_correction(s, ids[0], user_id))
         if retry.decision is not Decision.OK:
             await callback.answer(_DECISION_TEXT[retry.decision], show_alert=True)
             return
         await callback.answer()
         await _drop_keyboard(callback)
-        await bot.send_message(chat_id, texts.CORRECTION_RETRY)
+        await say(texts.CORRECTION_RETRY)
+    elif action in (GLOSSARY_ADD, GLOSSARY_SKIP):
+        add = action == GLOSSARY_ADD
+        answer = await db(
+            engine,
+            lambda s: service.correction_to_glossary(s, ids[0], ids[1], user_id, add=add),
+        )
+        if answer.decision is not Decision.OK:
+            await callback.answer(_DECISION_TEXT[answer.decision], show_alert=True)
+            return
+        await callback.answer()
+        await _drop_keyboard(callback)
+        if add:
+            await say(texts.GLOSSARY_ASK_SAVED.format(find=answer.find, replace=answer.replace))
+        else:
+            await say(texts.GLOSSARY_ASK_SKIPPED)
+    else:  # VOCAB_KEEP / VOCAB_SUGGESTION
+        use_suggestion = action == VOCAB_SUGGESTION
+        vocab = await db(
+            engine,
+            lambda s: service.answer_vocab(
+                s, ids[0], ids[1], user_id, keep=not use_suggestion, use_suggestion=use_suggestion
+            ),
+        )
+        await callback.answer()
+        if vocab.decision is Decision.OK:
+            await _drop_keyboard(callback)
+        await _vocab_reply(say, vocab)
 
 
 async def _approve(
@@ -268,6 +339,12 @@ async def _apply(
     await _drop_keyboard(callback)
     if result.new_version is not None:
         await bot.send_message(chat_id, texts.CORRECTION_APPLIED.format(number=result.new_version))
+    for candidate in result.glossary:
+        await bot.send_message(
+            chat_id,
+            texts.GLOSSARY_ASK.format(find=candidate.find, replace=candidate.replace),
+            reply_markup=glossary_keyboard(correction_id, candidate.index),
+        )
     for note in result.notes:
         await notify_admin(
             bot,
@@ -290,6 +367,7 @@ def build_router() -> Router:
     router.message.middleware(access)
     router.callback_query.middleware(access)
     router.message.register(on_start, CommandStart())
+    glossary.register(router)
     router.message.register(on_document, F.document)
     router.message.register(on_compressed_video, F.video)
     router.message.register(on_text, F.text)

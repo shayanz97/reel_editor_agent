@@ -104,7 +104,7 @@ Schrift: Montserrat (OFL), siehe [assets/fonts/README.md](assets/fonts/README.md
 ## Queue und Worker
 
 Jeder Pipeline-Schritt ist ein Job in Postgres (Tabelle `jobs`):
-`probe → audio → transcribe → glossary → vad → cutplan → segments → highlights → subtitles → render`.
+`probe → audio → transcribe → glossary → vocab → vad → cutplan → segments → highlights → subtitles → render`.
 `reels process` führt dieselben Jobs direkt aus; im Betrieb übernimmt sie der Worker.
 
 ```bash
@@ -156,6 +156,17 @@ uv run python -m reels.worker                  # Worker (Terminal 2)
 - Neu gerendert wird nur ab dem ersten betroffenen Schritt: Textkorrekturen schneiden nicht neu,
   gelöschte Sätze schon. Die Transkription läuft nie erneut. `note` geht an den Admin-Chat.
 - Antwortet der Kunde auf eine ältere Vorschau, wird die Korrektur mit Hinweis abgelehnt.
+- Nach einer Schreibweisen-Korrektur fragt der Bot: „Soll das künftig immer so korrigiert
+  werden?“ Bei „Ja, immer“ entsteht ein bestätigter Wörterbucheintrag, der ab dem nächsten Video
+  automatisch angewendet wird.
+- Vokabelprüfung (Schritt `vocab`): Das LLM markiert bis zu 5 Wörter, die vermutlich falsch
+  erkannt wurden (Fachbegriffe, Namen). Der Bot fragt pro Wort („Passt so“ / Vorschlag / Antwort
+  mit der richtigen Schreibweise); bis alles beantwortet ist, wartet die Pipeline vor dem Schnitt.
+  Antworten landen als *Vorschlag* im Wörterbuch (wirken erst nach `/begriff_ok`). Ohne
+  Telegram-Chat (`reels process`) wird nur protokolliert, nicht gewartet.
+- Wörterbuch im Bot: `/woerterbuch`, `/begriff_neu Begriff = falsch1, falsch2`,
+  `/begriff_aendern …`, `/begriff_loeschen …`, `/begriff_ok …`, `/begriffe` (mehrere Zeilen),
+  `/begriffe_export` (CSV).
 - Fehler: Der Kunde bekommt eine verständliche Nachricht (z. B. „Video zu lang“), der Admin-Chat
   Job-ID und Ursache.
 - Admin-Chat (`ADMIN_CHAT_ID`): `/kunde_neu <Name> [| Telegram-ID …]`, `/kunde_user <kunde> <id>`,

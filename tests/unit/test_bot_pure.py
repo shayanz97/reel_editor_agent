@@ -4,7 +4,7 @@ import pytest
 
 from reels.bot import texts
 from reels.bot.files import looks_like_video, to_host_path
-from reels.bot.keyboards import parse_callback, preview_keyboard
+from reels.bot.keyboards import glossary_keyboard, parse_callback, preview_keyboard, vocab_keyboard
 from reels.domain.segments import Segment
 
 
@@ -35,13 +35,21 @@ def test_looks_like_video(name: str | None, mime: str | None, ok: bool) -> None:
 
 
 def test_callback_roundtrip_and_rejects_garbage() -> None:
-    keyboard = preview_keyboard(42)
-    approve, change = keyboard.inline_keyboard[0]
-    assert parse_callback(approve.callback_data) == ("approve", 42)
-    assert parse_callback(change.callback_data) == ("change", 42)
-    assert parse_callback("apply:7") == ("apply", 7)
-    assert parse_callback("retry:7") == ("retry", 7)
-    for bad in (None, "", "approve", "approve:", "approve:x", "delete:1", "approve:-1"):
+    approve, change = preview_keyboard(42).inline_keyboard[0]
+    assert parse_callback(approve.callback_data) == ("approve", (42,))
+    assert parse_callback(change.callback_data) == ("change", (42,))
+    assert parse_callback("apply:7") == ("apply", (7,))
+    assert parse_callback("retry:7") == ("retry", (7,))
+    yes, no = glossary_keyboard(5, 1).inline_keyboard[0]
+    assert parse_callback(yes.callback_data) == ("gladd", (5, 1))
+    assert parse_callback(no.callback_data) == ("glskip", (5, 1))
+    keep, suggestion = vocab_keyboard(9, 2, "Kubernetes").inline_keyboard[0]
+    assert parse_callback(keep.callback_data) == ("vkeep", (9, 2))
+    assert parse_callback(suggestion.callback_data) == ("vsugg", (9, 2))
+    assert suggestion.text == "✏️ Kubernetes"
+    assert len(vocab_keyboard(9, 2, None).inline_keyboard[0]) == 1
+    for bad in (None, "", "approve", "approve:", "approve:x", "delete:1", "approve:-1",
+                "approve:1:2", "gladd:5", "vkeep:1:x"):  # fmt: skip
         assert parse_callback(bad) is None
 
 

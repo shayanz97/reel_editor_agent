@@ -6,6 +6,7 @@ over) and reads back what changed, so it can tell the client.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -21,11 +22,13 @@ from sqlalchemy.orm import Session
 from reels.config import Settings
 from reels.db import queue
 from reels.db.clients import ClientError, create_client, get_client
+from reels.db.glossary import add_term
 from reels.db.models import (
     Client,
     ClientUser,
     Correction,
     CorrectionStatus,
+    GlossaryStatus,
     Job,
     JobStatus,
     Project,
@@ -39,20 +42,26 @@ from reels.domain.corrections import (
     CorrectionPlan,
     Issue,
     Note,
+    ReplaceText,
     Resolved,
 )
 from reels.domain.corrections import apply as apply_ops
+from reels.domain.glossary import GlossaryTerm, apply_glossary
 from reels.domain.segments import Segment
-from reels.domain.words import Word
+from reels.domain.vocab import VocabQuestion
+from reels.domain.words import Word, normalize_token
 from reels.pipeline.runner import (
     CORRECTION_STEP,
     create_next_version,
     create_project,
+    next_step,
     version_state,
 )
 from reels.pipeline.steps import ProjectPaths
 
+VOCAB_STEP = "vocab"
 _SEGMENTS = TypeAdapter(list[Segment])
+_EDGE = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
 _TEXTS = TypeAdapter(list[str])
 
 
@@ -194,8 +203,16 @@ class CorrectionFailedNotice:
     error: str
 
 
+@dataclass(frozen=True)
+class VocabNotice:
+    version_id: int
+    chat_id: int
+    questions: list[VocabQuestion]
+
+
 Notice = (
-    ProcessingNotice
+    VocabNotice
+    | ProcessingNotice
     | PreviewNotice
     | FailureNotice
     | AdminJobNotice
@@ -291,6 +308,20 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
             )
         )
 
+    waiting = session.execute(
+        select(Version, Project)
+        .join(Project, Project.id == Version.project_id)
+        .where(Version.status == VersionStatus.PENDING, Project.telegram_chat_id.is_not(None))
+        .order_by(Version.id)
+    ).all()
+    for v, p in waiting:
+        assert p.telegram_chat_id is not None
+        state = v.edits.get("vocab")
+        if not state or state.get("notified_at") or not state.get("questions"):
+            continue
+        questions = [VocabQuestion.model_validate(q) for q in state["questions"]]
+        notices.append(VocabNotice(v.id, p.telegram_chat_id, questions))
+
     corrections = session.execute(
         select(Correction, Version, Project)
         .join(Version, Version.id == Correction.version_id)
@@ -350,8 +381,25 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
     return notices
 
 
-def mark_notice_sent(session: Session, notice: Notice, message_id: int | None = None) -> None:
+def mark_notice_sent(
+    session: Session, notice: Notice, message_id: int | dict[int, int] | None = None
+) -> None:
+    """`message_id`: the sent message, or {question id: message id} for vocab questions."""
     now = datetime.now(UTC)
+    if isinstance(notice, VocabNotice):
+        version = session.get(Version, notice.version_id)
+        if version is not None:
+            state = dict(version.edits.get("vocab", {}))
+            ids = message_id if isinstance(message_id, dict) else {}
+            state["questions"] = [
+                {**q, "message_id": ids.get(q["id"], q.get("message_id"))}
+                for q in state.get("questions", [])
+            ]
+            state["notified_at"] = now.isoformat()
+            version.edits = {**version.edits, "vocab": state}
+        return
+    if isinstance(message_id, dict):
+        message_id = None
     match notice:
         case ProcessingNotice():
             project = session.get(Project, notice.project_id)
@@ -566,10 +614,18 @@ def start_correction(
 
 
 @dataclass(frozen=True)
+class GlossaryCandidate:
+    index: int  # position of the replace_text operation in the plan
+    find: str
+    replace: str
+
+
+@dataclass(frozen=True)
 class CorrectionResult:
     decision: Decision
     new_version: int | None = None
     notes: tuple[str, ...] = ()
+    glossary: tuple[GlossaryCandidate, ...] = ()
     client_name: str | None = None
     project_id: int | None = None
     base_version: int | None = None
@@ -610,6 +666,11 @@ def apply_correction(
     plan = correction.plan or {}
     resolved = [Resolved.model_validate(r) for r in plan.get("resolved", [])]
     notes = tuple(r.op.text for r in resolved if isinstance(r.op, Note))
+    candidates = tuple(
+        GlossaryCandidate(i, r.op.find, r.op.replace)
+        for i, r in enumerate(resolved)
+        if isinstance(r.op, ReplaceText) and is_glossary_candidate(r.op.find, r.op.replace)
+    )
     step = plan.get("rerun_step")
     new_number = None
     if step:
@@ -625,7 +686,51 @@ def apply_correction(
         project.status_message_id = None  # a fresh status message for the new version
         project.notified_status = ProjectStatus.REVIEW.value
     correction.status = CorrectionStatus.APPLIED
-    return CorrectionResult(Decision.OK, new_number, notes, **info)  # type: ignore[arg-type]
+    return CorrectionResult(Decision.OK, new_number, notes, candidates, **info)  # type: ignore[arg-type]
+
+
+MAX_GLOSSARY_TERM_WORDS = 4
+
+
+def is_glossary_candidate(find: str, replace: str) -> bool:
+    """A spelling fix worth remembering: different words, short, not just punctuation/case."""
+    a = [normalize_token(t) for t in find.split()]
+    b = [normalize_token(t) for t in replace.split()]
+    a, b = [t for t in a if t], [t for t in b if t]
+    return bool(a) and bool(b) and a != b and len(b) <= MAX_GLOSSARY_TERM_WORDS
+
+
+@dataclass(frozen=True)
+class GlossaryAnswer:
+    decision: Decision
+    find: str | None = None
+    replace: str | None = None
+
+
+def correction_to_glossary(
+    session: Session, correction_id: int, index: int, telegram_user_id: int, *, add: bool
+) -> GlossaryAnswer:
+    """4.7: the client answered „Soll das künftig immer so korrigiert werden?“."""
+    row = session.execute(
+        select(Correction, Project)
+        .join(Version, Version.id == Correction.version_id)
+        .join(Project, Project.id == Version.project_id)
+        .join(ClientUser, ClientUser.client_id == Project.client_id)
+        .where(Correction.id == correction_id, ClientUser.telegram_user_id == telegram_user_id)
+    ).first()
+    if row is None:
+        return GlossaryAnswer(Decision.FORBIDDEN)
+    correction, project = row[0], row[1]
+    resolved = (correction.plan or {}).get("resolved", [])
+    if correction.status is not CorrectionStatus.APPLIED or not 0 <= index < len(resolved):
+        return GlossaryAnswer(Decision.OUTDATED)
+    op = Resolved.model_validate(resolved[index]).op
+    if not isinstance(op, ReplaceText) or not is_glossary_candidate(op.find, op.replace):
+        return GlossaryAnswer(Decision.OUTDATED)
+    term = _EDGE.sub("", op.replace.strip())
+    if add:
+        add_term(session, project.client_id, term, [op.find], source="correction")
+    return GlossaryAnswer(Decision.OK, op.find, term)
 
 
 def reject_correction(
@@ -641,6 +746,119 @@ def reject_correction(
     correction.status = CorrectionStatus.REJECTED
     correction.notified_at = correction.notified_at or datetime.now(UTC)
     return CorrectionResult(Decision.OK)
+
+
+# --- vocabulary questions (4.8) ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VocabTarget:
+    version_id: int
+    question_id: int | None  # None: questions are open, but the text answers none of them
+
+
+def vocab_target(
+    session: Session, access: Access, chat_id: int, reply_to: int | None
+) -> VocabTarget | None:
+    """Is a text message an answer to a vocabulary question? None if no question is open."""
+    rows = session.scalars(
+        select(Version)
+        .join(Project, Project.id == Version.project_id)
+        .where(
+            Project.client_id == access.client_id,
+            Project.telegram_chat_id == chat_id,
+            Version.status == VersionStatus.PENDING,
+        )
+        .order_by(Version.id.desc())
+    ).all()
+    open_version: int | None = None
+    for v in rows:
+        for q in v.edits.get("vocab", {}).get("questions", []):
+            if q.get("answer") is not None:
+                continue
+            if reply_to is not None and q.get("message_id") == reply_to:
+                return VocabTarget(v.id, q["id"])
+            open_version = open_version or v.id
+    return VocabTarget(open_version, None) if open_version is not None else None
+
+
+@dataclass(frozen=True)
+class VocabAnswer:
+    decision: Decision
+    question: str | None = None
+    answer: str | None = None  # None: keep as transcribed
+    finished: bool = False
+
+
+def answer_vocab(
+    session: Session,
+    version_id: int,
+    question_id: int,
+    telegram_user_id: int,
+    *,
+    keep: bool = False,
+    use_suggestion: bool = False,
+    spelling: str | None = None,
+) -> VocabAnswer:
+    """Record one answer. When the last one is in: apply them and let the pipeline continue."""
+    row = session.execute(
+        select(Version, Project)
+        .join(Project, Project.id == Version.project_id)
+        .join(ClientUser, ClientUser.client_id == Project.client_id)
+        .where(Version.id == version_id, ClientUser.telegram_user_id == telegram_user_id)
+        .with_for_update(of=Version)
+    ).first()
+    if row is None:
+        return VocabAnswer(Decision.FORBIDDEN)
+    version, project = row[0], row[1]
+    state = dict(version.edits.get("vocab", {}))
+    questions = [VocabQuestion.model_validate(q) for q in state.get("questions", [])]
+    question = next((q for q in questions if q.id == question_id), None)
+    if question is None or question.answer is not None:
+        return VocabAnswer(Decision.ALREADY_APPROVED)
+    if use_suggestion and question.suggestion:
+        answer = question.suggestion
+    elif spelling and spelling.strip():
+        answer = spelling.strip()
+    else:
+        answer = None
+    question.answer = answer if answer is not None else "keep"
+    state["questions"] = [q.model_dump(mode="json") for q in questions]
+    version.edits = {**version.edits, "vocab": state}
+
+    finished = all(q.answer is not None for q in questions)
+    if finished:
+        _apply_vocab_answers(session, version, project, questions)
+    return VocabAnswer(Decision.OK, question.text, answer, finished)
+
+
+def _apply_vocab_answers(
+    session: Session, version: Version, project: Project, questions: Sequence[VocabQuestion]
+) -> None:
+    """Corrected spellings go into the text overlay (all occurrences) and into the glossary as
+    suggestions (they take effect only once confirmed). Then the next step is queued."""
+    fixes = [q for q in questions if q.answer not in (None, "keep")]
+    if fixes:
+        row = session.get(TranscriptRow, version.transcript_id)
+        assert row is not None
+        words = [Word.model_validate(w) for w in row.words]
+        overlay = {int(k): v for k, v in version.text_overlay.items()}
+        for q in fixes:
+            assert q.answer is not None
+            term = GlossaryTerm(term=q.answer, variants=[q.text])
+            overlay, _ = apply_glossary(words, [term], overlay)
+            add_term(
+                session,
+                project.client_id,
+                q.answer,
+                [q.text],
+                status=GlossaryStatus.SUGGESTED,
+                source="vocab",
+            )
+        version.text_overlay = {str(k): v for k, v in sorted(overlay.items())}
+    following = next_step(VOCAB_STEP)
+    assert following is not None
+    queue.enqueue(session, version.id, following)
 
 
 # --- admin --------------------------------------------------------------------
