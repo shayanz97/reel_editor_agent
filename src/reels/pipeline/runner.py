@@ -460,11 +460,13 @@ def step_highlights(ctx: StepContext) -> None:
     _, segments = steps.segments_step(transcript, timeline, overlay)
     llm = ctx.providers.llm()
     used_before = len(llm.usage) if llm else 0
-    highlights = steps.highlights_step(llm, transcript, segments, timeline, overlay)
-    ctx.version.highlights = highlights
+    selection = steps.highlights_step(llm, transcript, segments, timeline, overlay)
+    ctx.version.highlights = selection.word_ids
     calls = llm.usage[used_before:] if llm else []
     ctx.metrics.update(
-        highlights=len(highlights),
+        highlights=len(selection.word_ids),
+        highlight_segments_missing=selection.missing_segments,
+        highlight_choices_rejected=selection.rejected,
         llm_used=llm is not None,
         llm_calls=[
             {"task": u.task, "model": u.model, "in": u.input_tokens, "out": u.output_tokens}

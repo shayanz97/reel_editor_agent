@@ -17,7 +17,7 @@ from typing import Any
 
 from reels.domain.words import Transcript
 from reels.llm.base import LLMUsage
-from reels.llm.schemas import HighlightPick, HighlightPlan
+from reels.llm.schemas import HighlightPlan, SegmentHighlight
 from reels.pipeline.runner import Providers
 from reels.transcribe.base import FakeEngine
 from reels.vad.silero import FixedVad
@@ -66,10 +66,23 @@ class FakeLLM:
         self.usage: list[LLMUsage] = []
 
     def structured(self, task: str, prompt: str, schema: type[Any], images: Any = None) -> Any:
+        """Marks the first word of every sentence as structure (lines `N: [id]word …`)."""
         self.usage.append(LLMUsage(task, "fake-model", 120, 30))
-        ids = [int(line.split("]")[0].lstrip("[")) for line in prompt.splitlines()
-               if line.startswith("[")]  # fmt: skip
-        return HighlightPlan(highlights=[HighlightPick(word_id=i, reason="test") for i in ids])
+        items = []
+        for line in prompt.splitlines():
+            number, sep, rest = line.partition(": [")
+            if sep and number.isdigit():
+                first = int(rest.split("]", 1)[0])
+                items.append(
+                    SegmentHighlight(
+                        segment=int(number),
+                        kind="structure",
+                        first_word_id=first,
+                        last_word_id=first,
+                        reason="t",
+                    )
+                )
+        return HighlightPlan(segments=items)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [[0.0] for _ in texts]

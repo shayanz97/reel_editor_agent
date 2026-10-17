@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from reels.config import Settings
 from reels.llm.base import LLMError
 from reels.llm.openai_provider import OpenAIProvider
-from reels.llm.schemas import HighlightPick, HighlightPlan
+from reels.llm.schemas import HighlightPlan, SegmentHighlight
 
 
 class _Responses:
@@ -47,7 +47,9 @@ def _validation_error() -> ValidationError:
     raise AssertionError
 
 
-PLAN = HighlightPlan(highlights=[HighlightPick(word_id=3, reason="Fachbegriff")])
+PLAN = HighlightPlan(
+    segments=[SegmentHighlight(segment=1, kind="key", first_word_id=3, last_word_id=3, reason="x")]
+)
 
 
 def test_structured_returns_parsed_and_records_usage() -> None:

@@ -18,7 +18,12 @@ from pydantic import BaseModel, TypeAdapter
 
 from reels.domain.cutplan import CutParams, CutPlan, build_cut_plan, filler_ids
 from reels.domain.glossary import GlossaryTerm, apply_glossary
-from reels.domain.highlights import select_highlights, transcript_for_prompt
+from reels.domain.highlights import (
+    HighlightChoice,
+    HighlightSelection,
+    select_highlights,
+    transcript_for_prompt,
+)
 from reels.domain.segments import Segment, Span, number_segments, split_sentences
 from reels.domain.subtitles import GroupParams, build_events
 from reels.domain.timeline import Timeline
@@ -204,10 +209,11 @@ def highlights_step(
     segments: Sequence[Segment],
     timeline: Timeline,
     overlay: TextOverlay,
-) -> list[int]:
-    """LLM picks highlight words; code validates them. Without LLM: no highlights."""
+) -> HighlightSelection:
+    """LLM decides per segment; code validates. Without LLM (or on LLM error): no highlights."""
+    empty = HighlightSelection(word_ids=[], missing_segments=0, rejected=0)
     if llm is None or not segments:
-        return []
+        return empty
     prompt = load_prompt(
         "highlights", transcript=transcript_for_prompt(transcript.words, segments, overlay)
     )
@@ -215,10 +221,22 @@ def highlights_step(
         plan = llm.structured("highlights", prompt, HighlightPlan)
     except LLMError as exc:
         log.warning("highlights_failed", extra={"error": str(exc)})
-        return []
+        return empty
+    choices = [
+        HighlightChoice(
+            segment=c.segment, kind=c.kind, first_word=c.first_word_id, last_word=c.last_word_id
+        )
+        for c in plan.segments
+    ]
     kept = timeline.kept_word_ids(transcript.words)
     visible = {w.id for w in transcript.words if overlay.get(w.id, w.text).strip()}
-    return select_highlights([h.word_id for h in plan.highlights], segments, kept & visible)
+    selection = select_highlights(choices, segments, kept, visible)
+    if selection.missing_segments or selection.rejected:
+        log.warning(
+            "highlights_incomplete",
+            extra={"missing": selection.missing_segments, "rejected": selection.rejected},
+        )
+    return selection
 
 
 def subtitles_step(
