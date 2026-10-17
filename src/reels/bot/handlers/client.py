@@ -15,8 +15,8 @@ from sqlalchemy import Engine
 from reels.bot import service, texts
 from reels.bot.common import FILE_TIMEOUT_S, db, notify_admin
 from reels.bot.files import looks_like_video, to_host_path
-from reels.bot.keyboards import APPROVE, parse_callback
-from reels.bot.service import Access, Decision
+from reels.bot.keyboards import APPLY, APPROVE, CHANGE, parse_callback
+from reels.bot.service import Access, CorrectionStart, Decision
 from reels.config import Settings
 from reels.log import get_logger, log_context
 
@@ -155,6 +155,43 @@ _DECISION_TEXT = {
     Decision.FORBIDDEN: texts.FORBIDDEN,
 }
 
+_START_TEXT = {
+    CorrectionStart.STARTED: texts.CORRECTION_STARTED,
+    CorrectionStart.NO_PROJECT: texts.CORRECTION_NO_PROJECT,
+    CorrectionStart.OUTDATED: texts.OUTDATED,
+    CorrectionStart.BUSY: texts.CORRECTION_BUSY,
+    CorrectionStart.APPROVED: texts.ALREADY_APPROVED,
+}
+
+
+async def on_text(message: Message, access: Access, engine: Engine) -> None:
+    """Free text = correction request for the preview it replies to (or the newest one)."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(texts.NOT_A_VIDEO)
+        return
+    reply_to = message.reply_to_message.message_id if message.reply_to_message else None
+    outcome = await db(
+        engine,
+        lambda s: service.start_correction(
+            s,
+            access,
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            text=text,
+            reply_to=reply_to,
+        ),
+    )
+    log.info("correction_request", extra={"outcome": outcome.value})
+    if outcome is not CorrectionStart.DUPLICATE:
+        await message.answer(_START_TEXT[outcome])
+
+
+async def _drop_keyboard(callback: CallbackQuery) -> None:
+    if isinstance(callback.message, Message):
+        with suppress(Exception):
+            await callback.message.edit_reply_markup(reply_markup=None)
+
 
 async def on_button(
     callback: CallbackQuery, bot: Bot, access: Access, engine: Engine, app: Settings
@@ -163,44 +200,88 @@ async def on_button(
     if parsed is None:
         await callback.answer()
         return
-    action, version_id = parsed
+    action, target_id = parsed
     user_id = callback.from_user.id
+    chat_id = callback.message.chat.id if callback.message is not None else user_id
     if action == APPROVE:
-        result = await db(engine, lambda s: service.approve(s, version_id, user_id, app))
-    else:
-        result = await db(engine, lambda s: service.change_request(s, version_id, user_id))
+        await _approve(callback, bot, engine, app, target_id, user_id, chat_id)
+    elif action == CHANGE:
+        result = await db(engine, lambda s: service.change_request(s, target_id, user_id))
+        if result.decision is not Decision.OK:
+            await callback.answer(_DECISION_TEXT[result.decision], show_alert=True)
+            return
+        await callback.answer()
+        await bot.send_message(chat_id, texts.CHANGE_PROMPT)
+    elif action == APPLY:
+        await _apply(callback, bot, engine, app, target_id, user_id, chat_id)
+    else:  # RETRY
+        retry = await db(engine, lambda s: service.reject_correction(s, target_id, user_id))
+        if retry.decision is not Decision.OK:
+            await callback.answer(_DECISION_TEXT[retry.decision], show_alert=True)
+            return
+        await callback.answer()
+        await _drop_keyboard(callback)
+        await bot.send_message(chat_id, texts.CORRECTION_RETRY)
+
+
+async def _approve(
+    callback: CallbackQuery,
+    bot: Bot,
+    engine: Engine,
+    app: Settings,
+    version_id: int,
+    user_id: int,
+    chat_id: int,
+) -> None:
+    result = await db(engine, lambda s: service.approve(s, version_id, user_id, app))
     if result.decision is not Decision.OK:
         await callback.answer(_DECISION_TEXT[result.decision], show_alert=True)
         return
-
     await callback.answer()
-    message = callback.message
-    chat_id = message.chat.id if message is not None else user_id
-    if isinstance(message, Message):
-        with suppress(Exception):
-            await message.edit_reply_markup(reply_markup=None)
-    if action == APPROVE:
-        assert result.export is not None
-        await bot.send_document(
-            chat_id,
-            FSInputFile(
-                result.export, filename=f"reel_{result.project_id}_v{result.version_number}.mp4"
-            ),
-            caption=texts.APPROVED,
-            request_timeout=FILE_TIMEOUT_S,
-        )
-        log.info("version_approved", extra={"version_id": version_id})
-    else:
-        await bot.send_message(chat_id, texts.CHANGE_NOT_YET)
+    await _drop_keyboard(callback)
+    assert result.export is not None
+    await bot.send_document(
+        chat_id,
+        FSInputFile(
+            result.export, filename=f"reel_{result.project_id}_v{result.version_number}.mp4"
+        ),
+        caption=texts.APPROVED,
+        request_timeout=FILE_TIMEOUT_S,
+    )
+    log.info("version_approved", extra={"version_id": version_id})
+
+
+async def _apply(
+    callback: CallbackQuery,
+    bot: Bot,
+    engine: Engine,
+    app: Settings,
+    correction_id: int,
+    user_id: int,
+    chat_id: int,
+) -> None:
+    result = await db(engine, lambda s: service.apply_correction(s, correction_id, user_id))
+    if result.decision is not Decision.OK:
+        await callback.answer(_DECISION_TEXT[result.decision], show_alert=True)
+        return
+    await callback.answer()
+    await _drop_keyboard(callback)
+    if result.new_version is not None:
+        await bot.send_message(chat_id, texts.CORRECTION_APPLIED.format(number=result.new_version))
+    for note in result.notes:
         await notify_admin(
             bot,
             app,
-            texts.ADMIN_CHANGE_REQUEST.format(
+            texts.ADMIN_NOTE.format(
                 client=result.client_name,
                 project_id=result.project_id,
-                number=result.version_number,
+                number=result.base_version,
+                text=note,
             ),
         )
+    if result.notes:
+        await bot.send_message(chat_id, texts.CORRECTION_NOTES_FORWARDED)
+    log.info("correction_applied", extra={"correction_id": correction_id})
 
 
 def build_router() -> Router:
@@ -211,6 +292,7 @@ def build_router() -> Router:
     router.message.register(on_start, CommandStart())
     router.message.register(on_document, F.document)
     router.message.register(on_compressed_video, F.video)
+    router.message.register(on_text, F.text)
     router.message.register(on_other)
     router.callback_query.register(on_button)
     return router

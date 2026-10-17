@@ -19,9 +19,12 @@ from sqlalchemy.orm import Session
 
 from reels.bot import service, texts
 from reels.bot.common import FILE_TIMEOUT_S, db
-from reels.bot.keyboards import preview_keyboard
+from reels.bot.keyboards import correction_keyboard, preview_keyboard
 from reels.bot.service import (
     AdminJobNotice,
+    CorrectionFailedNotice,
+    CorrectionPlannedNotice,
+    CorrectionQuestionNotice,
     FailureNotice,
     Notice,
     PreviewNotice,
@@ -73,14 +76,38 @@ class Notifier:
         match notice:
             case ProcessingNotice():
                 with log_context(project_id=notice.project_id):
-                    await self._status(notice.chat_id, notice.status_message_id, texts.PROCESSING)
-                return None
+                    return await self._status(
+                        notice.chat_id, notice.status_message_id, texts.PROCESSING
+                    )
             case PreviewNotice():
                 with log_context(project_id=notice.project_id, version_id=notice.version_id):
                     return await self._preview(notice)
             case FailureNotice():
                 text = texts.failure_text(notice.error_code, notice.error_details)
                 await self._status(notice.chat_id, notice.status_message_id, text)
+                return None
+            case CorrectionPlannedNotice():
+                sent = await self.bot.send_message(
+                    notice.chat_id,
+                    texts.correction_summary(notice.operations, notice.version_number),
+                    reply_markup=correction_keyboard(notice.correction_id),
+                )
+                return sent.message_id
+            case CorrectionQuestionNotice():
+                sent = await self.bot.send_message(
+                    notice.chat_id,
+                    texts.correction_question(
+                        notice.issues, notice.clarification, notice.version_number
+                    ),
+                )
+                return sent.message_id
+            case CorrectionFailedNotice():
+                text = (
+                    texts.CORRECTION_UNAVAILABLE
+                    if notice.error == "llm_unavailable"
+                    else texts.CORRECTION_FAILED
+                )
+                await self.bot.send_message(notice.chat_id, text)
                 return None
             case AdminJobNotice():
                 if self.app.admin_chat_id is None:
@@ -100,15 +127,18 @@ class Notifier:
                 )
                 return None
 
-    async def _status(self, chat_id: int, message_id: int | None, text: str) -> None:
-        """Edit the project's status message; send a new one if that is not possible."""
+    async def _status(self, chat_id: int, message_id: int | None, text: str) -> int:
+        """Edit the project's status message; send a new one if that is not possible.
+
+        Returns the id of the message that now shows the status."""
         if message_id is not None:
             try:
                 await self.bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id)
-                return
+                return message_id
             except TelegramBadRequest:
                 log.info("status_edit_failed", extra={"message_id": message_id})
-        await self.bot.send_message(chat_id, text)
+        sent = await self.bot.send_message(chat_id, text)
+        return sent.message_id
 
     async def _preview(self, n: PreviewNotice) -> int:
         await self._status(
@@ -126,7 +156,7 @@ class Notifier:
             supports_streaming=True,
             request_timeout=FILE_TIMEOUT_S,
         )
-        messages = texts.preview_messages(n.segments)
+        messages = texts.preview_messages(n.segments, n.removed)
         for text in messages[:-1]:
             await self.bot.send_message(n.chat_id, text)
         last = await self.bot.send_message(
@@ -146,6 +176,8 @@ def _key(notice: Notice) -> tuple[str, int]:
             return ("failure", notice.version_id)
         case AdminJobNotice():
             return ("admin", notice.job_id)
+        case CorrectionPlannedNotice() | CorrectionQuestionNotice() | CorrectionFailedNotice():
+            return ("correction", notice.correction_id)
 
 
 def _marker(notice: Notice, message_id: int | None) -> Callable[[Session], None]:

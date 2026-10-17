@@ -4,7 +4,7 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 3** – Code fertig und mit Fakes getestet; Abnahme mit echtem Telegram steht aus.
+Status: **Etappe 4** – Teil 1 (Korrekturen) fertig; Teil 2 (Fachwörterbuch: 4.7–4.9) offen.
 
 Offene Punkte früherer Etappen:
 - Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)
@@ -119,16 +119,16 @@ Offene Punkte früherer Etappen:
 
 **Ziel:** Kunde korrigiert per Freitext, bekommt eine neue Version. Das Wörterbuch lernt mit.
 
-- [ ] 4.1 `domain/corrections.py`: Pydantic-Schemas aller Operationen (diskriminierte Union), Validierung gegen Version, Angabe der neu auszulösenden Schritte pro Operation
-- [ ] 4.2 Anwendung der Operationen auf Schnittplan, Text-Overlay, Hervorhebungen, Untertitelposition → neue Version
-- [ ] 4.3 LLM: Freitext → `CorrectionPlan` (Prompt `llm/prompts/corrections.md`, Kundennachricht klar als Daten markiert)
-- [ ] 4.4 Bot-Ablauf: „Ändern“ → Freitext → Zusammenfassung des Verstandenen → Buttons „Ausführen“ / „Nochmal“ → neue Version → neue Vorschau
-- [ ] 4.5 Rückfragen bei ungültigen oder unklaren Operationen statt Raten
-- [ ] 4.6 Korrekturen zu veralteten Versionen ablehnen mit Hinweis
+- [x] 4.1 `domain/corrections.py`: Pydantic-Schemas aller Operationen (diskriminierte Union), Validierung gegen Version, Angabe der neu auszulösenden Schritte pro Operation
+- [x] 4.2 Anwendung der Operationen auf Schnittplan, Text-Overlay, Hervorhebungen, Untertitelposition → neue Version
+- [x] 4.3 LLM: Freitext → `CorrectionPlan` (Prompt `llm/prompts/corrections.md`, Kundennachricht klar als Daten markiert)
+- [x] 4.4 Bot-Ablauf: „Ändern“ → Freitext → Zusammenfassung des Verstandenen → Buttons „Ausführen“ / „Nochmal“ → neue Version → neue Vorschau
+- [x] 4.5 Rückfragen bei ungültigen oder unklaren Operationen statt Raten
+- [x] 4.6 Korrekturen zu veralteten Versionen ablehnen mit Hinweis
 - [ ] 4.7 `add_to_glossary`: Nachfrage „Soll das künftig immer so korrigiert werden?“ → Eintrag mit Variante
 - [ ] 4.8 Vokabularprüfung nach der Transkription: LLM markiert verdächtige Wörter → gezielte Rückfrage im Bot vor dem Rendern (mit Option „passt so“)
 - [ ] 4.9 Wörterbuch-Befehle: `/begriffe` (Liste importieren), `/woerterbuch`, `/begriff_neu`, `/begriff_aendern`, `/begriff_loeschen`, CSV-Export
-- [ ] 4.10 `note`-Operation leitet Wünsche an den Admin-Chat weiter
+- [x] 4.10 `note`-Operation leitet Wünsche an den Admin-Chat weiter
 
 **Abnahme**
 - Testfälle für jede Operation auf `domain`-Ebene (ohne LLM)

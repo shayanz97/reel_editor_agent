@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +59,10 @@ class VersionPaths:
     @property
     def segments(self) -> Path:
         return self.dir / "segments.json"
+
+    @property
+    def removed_segments(self) -> Path:
+        return self.dir / "removed_segments.json"
 
     @property
     def highlights(self) -> Path:
@@ -182,7 +186,8 @@ def cutplan_step(
     speech: Sequence[tuple[float, float]],
     src: ProbeResult,
     settings: ClientSettings,
-    removed: Sequence[int] = (),
+    removed: Collection[int] = (),
+    keep_pauses_after: Collection[int] = (),
 ) -> CutPlan:
     params = CutParams(
         pause_threshold_s=settings.pause_threshold_s,
@@ -192,13 +197,23 @@ def cutplan_step(
     drop = set(removed)
     if settings.remove_fillers:
         drop |= filler_ids(transcript.words)
-    return build_cut_plan(transcript.words, speech, src.duration, params, removed=drop)
+    return build_cut_plan(
+        transcript.words,
+        speech,
+        src.duration,
+        params,
+        removed=drop,
+        keep_pauses_after=keep_pauses_after,
+    )
 
 
 def segments_step(
-    transcript: Transcript, timeline: Timeline, overlay: TextOverlay
+    transcript: Transcript,
+    timeline: Timeline,
+    overlay: TextOverlay,
+    splits_after: Collection[int] = (),
 ) -> tuple[list[Span], list[Segment]]:
-    spans = split_sentences(transcript.words)
+    spans = split_sentences(transcript.words, splits_after=splits_after)
     kept = timeline.kept_word_ids(transcript.words)
     return spans, number_segments(transcript.words, spans, kept, overlay)
 

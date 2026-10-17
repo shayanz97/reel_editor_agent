@@ -4,7 +4,9 @@ REELS_TEST_SPEC     synthetic video JSON sidecar -> fake words and VAD regions
 REELS_TEST_ENGINE   ok | fail | sleep-first:<s> (sleep only on the first transcribe call)
 REELS_TEST_CALLS    file that gets one line per transcribe call (counts across processes)
 REELS_TEST_NOTIFY   file that gets one line per admin notification
-REELS_TEST_LLM      1 -> fake LLM that highlights the first word of each sentence
+REELS_TEST_LLM      1 -> fake LLM (highlights: first word of each sentence)
+REELS_TEST_CORRECTION  JSON answer of the fake LLM for corrections
+REELS_TEST_PROMPTS  file that gets every prompt the fake LLM receives
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Any
 
 from reels.domain.words import Transcript
 from reels.llm.base import LLMUsage
-from reels.llm.schemas import HighlightPlan, SegmentHighlight
+from reels.llm.schemas import CorrectionResponse, HighlightPlan, SegmentHighlight
 from reels.pipeline.runner import Providers
 from reels.transcribe.base import FakeEngine
 from reels.vad.silero import FixedVad
@@ -66,8 +68,13 @@ class FakeLLM:
         self.usage: list[LLMUsage] = []
 
     def structured(self, task: str, prompt: str, schema: type[Any], images: Any = None) -> Any:
-        """Marks the first word of every sentence as structure (lines `N: [id]word …`)."""
+        """Highlights: first word of every sentence. Corrections: REELS_TEST_CORRECTION."""
         self.usage.append(LLMUsage(task, "fake-model", 120, 30))
+        if os.environ.get("REELS_TEST_PROMPTS"):
+            with open(os.environ["REELS_TEST_PROMPTS"], "a") as fh:
+                fh.write(prompt + "\n=====\n")
+        if task == "corrections":
+            return CorrectionResponse.model_validate_json(os.environ["REELS_TEST_CORRECTION"])
         items = []
         for line in prompt.splitlines():
             number, sep, rest = line.partition(": [")

@@ -23,6 +23,8 @@ from reels.db.models import (
     Asset,
     AssetKind,
     Client,
+    Correction,
+    CorrectionStatus,
     Job,
     JobStatus,
     Project,
@@ -33,17 +35,20 @@ from reels.db.models import (
 from reels.db.models import (
     Transcript as TranscriptRow,
 )
+from reels.domain.corrections import VersionState, removed_segments, rerun_step, resolve
 from reels.domain.cutplan import CutPlan
 from reels.domain.glossary import build_prompt_hint
+from reels.domain.segments import Segment, Span
 from reels.domain.timeline import Timeline
-from reels.domain.words import Transcript
-from reels.llm.base import LLMProvider
+from reels.domain.words import Transcript, display_text
+from reels.llm.base import LLMProvider, load_prompt
+from reels.llm.schemas import CorrectionResponse
 from reels.log import get_logger, log_context
 from reels.media.ffmpeg import FFmpegError
 from reels.media.probe import ProbeResult, VideoRejectedError
 from reels.pipeline import steps
 from reels.pipeline.steps import ProjectPaths
-from reels.settings_schema import ClientSettings
+from reels.settings_schema import ClientSettings, SubtitleSettings
 from reels.transcribe.base import TranscriptionEngine
 from reels.vad.silero import VoiceActivityDetector
 
@@ -62,6 +67,7 @@ STEP_ORDER: tuple[str, ...] = (
     "render",
 )
 CLEANUP_STEP = "cleanup"
+CORRECTION_STEP = "correction"
 
 
 class PermanentStepError(Exception):
@@ -237,7 +243,7 @@ def execute_job(
                         paths=ProjectPaths.for_project(app.data_dir, client.id, project.id),
                         providers=providers,
                     )
-                    STEPS[step](ctx)
+                    ALL_STEPS[step](ctx)
                     metrics = ctx.metrics
                 metrics["runtime_s"] = round(time.perf_counter() - start, 3)
                 metrics["attempt"] = job.attempts
@@ -306,6 +312,21 @@ def handle_failure(
 def mark_failed(session: Session, job: Job) -> None:
     if job.version_id is None:
         return
+    if job.step == CORRECTION_STEP:
+        # The version itself is fine; only this correction could not be interpreted.
+        correction = session.scalar(
+            select(Correction)
+            .where(
+                Correction.version_id == job.version_id,
+                Correction.status == CorrectionStatus.RECEIVED,
+            )
+            .order_by(Correction.id.desc())
+            .limit(1)
+        )
+        if correction is not None:
+            correction.status = CorrectionStatus.REJECTED
+            correction.plan = {"error": "failed"}
+        return
     version = session.get(Version, job.version_id)
     if version is None:
         return
@@ -341,8 +362,18 @@ def _transcript(ctx: StepContext) -> Transcript:
     return Transcript(engine=row.engine, model=row.model, language=row.language, words=row.words)
 
 
-def _overlay(ctx: StepContext) -> dict[int, str]:
-    return {int(k): v for k, v in ctx.version.text_overlay.items()}
+def version_state(version: Version) -> VersionState:
+    return VersionState.from_version(version.text_overlay, version.highlights, version.edits)
+
+
+def _structure(
+    ctx: StepContext, transcript: Transcript
+) -> tuple[Timeline, list[Span], list[Segment], VersionState]:
+    """Timeline, spans and numbered segments of this version, with its edits applied."""
+    state = version_state(ctx.version)
+    timeline = Timeline(_plan(ctx).keep)
+    spans, segments = steps.segments_step(transcript, timeline, state.overlay, state.splits_after)
+    return timeline, spans, segments, state
 
 
 def _plan(ctx: StepContext) -> CutPlan:
@@ -434,7 +465,15 @@ def step_vad(ctx: StepContext) -> None:
 def step_cutplan(ctx: StepContext) -> None:
     speech = steps.load_speech(ctx.paths)
     src = _probe(ctx)
-    plan = steps.cutplan_step(_transcript(ctx), speech, src, ctx.settings)
+    state = version_state(ctx.version)
+    plan = steps.cutplan_step(
+        _transcript(ctx),
+        speech,
+        src,
+        ctx.settings,
+        removed=state.removed_words,
+        keep_pauses_after=state.keep_pauses_after,
+    )
     if not plan.keep:
         raise PermanentStepError("no speech found in the video", "no_speech")
     ctx.version.cut_plan = plan.model_dump(mode="json")
@@ -448,16 +487,32 @@ def step_cutplan(ctx: StepContext) -> None:
 
 
 def step_segments(ctx: StepContext) -> None:
-    timeline = Timeline(_plan(ctx).keep)
-    _, segments = steps.segments_step(_transcript(ctx), timeline, _overlay(ctx))
-    steps.write_json(ctx.paths.version(ctx.version.number).segments, segments)
-    ctx.metrics["segments"] = len(segments)
+    transcript = _transcript(ctx)
+    _, spans, segments, state = _structure(ctx, transcript)
+    vpaths = ctx.paths.version(ctx.version.number)
+    steps.write_json(vpaths.segments, segments)
+    # Segments removed by corrections, listed in the preview so they can be restored (E1 …).
+    by_id = {w.id: w for w in transcript.words}
+    removed = [
+        " ".join(
+            display_text(by_id[i], state.overlay)
+            for i in range(span.first_word, span.last_word + 1)
+            if display_text(by_id[i], state.overlay).strip()
+        )
+        for span in removed_segments(spans, state.removed_words)
+    ]
+    steps.write_json(vpaths.removed_segments, removed)
+    ctx.metrics.update(segments=len(segments), removed_segments=len(removed))
 
 
 def step_highlights(ctx: StepContext) -> None:
-    transcript, overlay = _transcript(ctx), _overlay(ctx)
-    timeline = Timeline(_plan(ctx).keep)
-    _, segments = steps.segments_step(transcript, timeline, overlay)
+    if ctx.version.parent_id is not None:
+        # Later versions keep their highlights (incl. the client's own highlight edits).
+        ctx.metrics.update(highlights=len(ctx.version.highlights), reused=True, llm_used=False)
+        return
+    transcript = _transcript(ctx)
+    timeline, _, segments, state = _structure(ctx, transcript)
+    overlay = state.overlay
     llm = ctx.providers.llm()
     used_before = len(llm.usage) if llm else 0
     selection = steps.highlights_step(llm, transcript, segments, timeline, overlay)
@@ -478,20 +533,118 @@ def step_highlights(ctx: StepContext) -> None:
 
 
 def step_subtitles(ctx: StepContext) -> None:
-    transcript, overlay = _transcript(ctx), _overlay(ctx)
-    timeline = Timeline(_plan(ctx).keep)
-    spans, _ = steps.segments_step(transcript, timeline, overlay)
+    transcript = _transcript(ctx)
+    timeline, spans, _, state = _structure(ctx, transcript)
+    # Client settings, overridden by this version's edits (e.g. move_subtitles).
+    subtitle = SubtitleSettings.model_validate(
+        {**ctx.settings.subtitle.model_dump(mode="json"), **state.subtitle}
+    )
     steps.subtitles_step(
         transcript,
         timeline,
         spans,
-        overlay,
+        state.overlay,
         [int(i) for i in ctx.version.highlights],
-        ctx.settings,
+        ctx.settings.model_copy(update={"subtitle": subtitle}),
         ctx.paths.version(ctx.version.number).subtitles,
     )
-    ctx.version.subtitle_style = ctx.settings.subtitle.model_dump(mode="json")
-    ctx.metrics["karaoke"] = ctx.settings.subtitle.karaoke
+    ctx.version.subtitle_style = subtitle.model_dump(mode="json")
+    ctx.metrics.update(karaoke=subtitle.karaoke, position=subtitle.position)
+
+
+def step_correction(ctx: StepContext) -> None:
+    """Interpret the newest received correction of this version (LLM -> validated plan)."""
+    correction = ctx.session.scalar(
+        select(Correction)
+        .where(
+            Correction.version_id == ctx.version.id, Correction.status == CorrectionStatus.RECEIVED
+        )
+        .order_by(Correction.id.desc())
+        .limit(1)
+    )
+    if correction is None:
+        ctx.metrics["correction_id"] = None
+        return
+    ctx.metrics["correction_id"] = correction.id
+    llm = ctx.providers.llm()
+    if llm is None:
+        correction.status = CorrectionStatus.REJECTED
+        correction.plan = {"error": "llm_unavailable"}
+        return
+
+    transcript = _transcript(ctx)
+    _, spans, segments, state = _structure(ctx, transcript)
+    removed = removed_segments(spans, state.removed_words)
+    by_id = {w.id: w for w in transcript.words}
+    removed_lines = [
+        f"E{n}: "
+        + " ".join(
+            display_text(by_id[i], state.overlay)
+            for i in range(span.first_word, span.last_word + 1)
+            if display_text(by_id[i], state.overlay).strip()
+        )
+        for n, span in enumerate(removed, start=1)
+    ]
+    prompt = load_prompt(
+        "corrections",
+        version=str(ctx.version.number),
+        segments="\n".join(f"{s.number}: {s.text}" for s in segments),
+        removed="\n".join(removed_lines) or "keine",
+        message=correction.message_text,
+    )
+    used_before = len(llm.usage)
+    response = llm.structured("corrections", prompt, CorrectionResponse)
+    resolved, issues = resolve(response.operations, transcript.words, segments, removed, state)
+    understood = bool(resolved) and not issues and not response.clarification
+    correction.plan = {
+        "operations": [op.model_dump(mode="json") for op in response.operations],
+        "resolved": [r.model_dump(mode="json") for r in resolved],
+        "issues": [i.model_dump(mode="json") for i in issues],
+        "clarification": response.clarification,
+        "rerun_step": rerun_step([r.op for r in resolved], STEP_ORDER),
+    }
+    correction.status = (
+        CorrectionStatus.PLANNED if understood else CorrectionStatus.NEEDS_CLARIFICATION
+    )
+    calls = llm.usage[used_before:]
+    ctx.metrics.update(
+        status=correction.status.value,
+        operations=len(response.operations),
+        issues=len(issues),
+        llm_input_tokens=sum(u.input_tokens for u in calls),
+        llm_output_tokens=sum(u.output_tokens for u in calls),
+    )
+
+
+def create_next_version(
+    session: Session, base: Version, state: VersionState, from_step: str
+) -> Version:
+    """Version n+1 from a confirmed correction; rendered again from `from_step` on."""
+    number = (
+        session.scalar(
+            select(func.max(Version.number)).where(Version.project_id == base.project_id)
+        )
+        or 0
+    ) + 1
+    version = Version(
+        project_id=base.project_id,
+        number=number,
+        parent_id=base.id,
+        transcript_id=base.transcript_id,
+        status=VersionStatus.PENDING,
+        cut_plan=base.cut_plan,
+        text_overlay={str(k): v for k, v in sorted(state.overlay.items())},
+        highlights=sorted(state.highlights),
+        subtitle_style=base.subtitle_style,
+        edits=state.edits(),
+    )
+    session.add(version)
+    session.flush()
+    queue.enqueue(session, version.id, from_step)
+    project = session.get(Project, base.project_id)
+    assert project is not None
+    project.status = ProjectStatus.PROCESSING
+    return version
 
 
 def step_render(ctx: StepContext) -> None:
@@ -539,3 +692,4 @@ STEPS: dict[str, Callable[[StepContext], None]] = {
     "render": step_render,
 }
 assert tuple(STEPS) == STEP_ORDER
+ALL_STEPS: dict[str, Callable[[StepContext], None]] = {**STEPS, CORRECTION_STEP: step_correction}

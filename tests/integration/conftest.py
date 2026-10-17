@@ -94,3 +94,7 @@ def app_env(
     get_engine().dispose()
     get_settings.cache_clear()
     get_engine.cache_clear()
+
+
+# Fixtures defined in helper modules, made available to all integration tests.
+from tests.integration.bot_fakes import bot_env  # noqa: E402, F401

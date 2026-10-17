@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from reels.domain.corrections import AnyOperation
+
 
 class SegmentHighlight(BaseModel):
     segment: int
@@ -17,3 +19,11 @@ class SegmentHighlight(BaseModel):
 
 class HighlightPlan(BaseModel):
     segments: list[SegmentHighlight]
+
+
+# Plain union of the operation models: a discriminated union would produce JSON Schema
+# `oneOf`, which Structured Outputs in strict mode does not accept. Docstrings of these
+# models end up in the schema sent to the API, so comments are used instead.
+class CorrectionResponse(BaseModel):
+    operations: list[AnyOperation]
+    clarification: str | None

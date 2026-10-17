@@ -9,6 +9,7 @@ Rules (CLAUDE.md §5):
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterable, Sequence
 
 from pydantic import BaseModel
@@ -67,6 +68,7 @@ def build_cut_plan(
     duration: float,
     params: CutParams,
     removed: Iterable[int] = (),
+    keep_pauses_after: Iterable[int] = (),
 ) -> CutPlan:
     """Build the cut plan from word timings and VAD speech regions.
 
@@ -76,6 +78,8 @@ def build_cut_plan(
     - Content closer than `pause_threshold_s` is merged unless a removed word lies between.
     - Clusters without any kept word (noise, unrecognised sounds) are dropped.
     - Each cluster is padded by `edge_padding_s`, clamped to the video and to word edges.
+    - The pause after a word in `keep_pauses_after` is kept at full length (correction
+      `keep_pause`), unless a removed word lies in it.
     """
     removed_ids = set(removed)
     kept = [w for w in words if w.id not in removed_ids]
@@ -86,12 +90,17 @@ def build_cut_plan(
         "cut_padding_s": params.cut_padding_s,
         "edge_padding_s": params.edge_padding_s,
         "removed_words": float(len(dropped)),
+        "kept_pauses": float(len(set(keep_pauses_after))),
     }
     if not kept:
         return CutPlan(keep=[], params=record)
 
     dropped_spans = [(w.start, w.end) for w in dropped]
     content: list[Span] = [(w.start, w.end) for w in kept]
+    keep_after = set(keep_pauses_after)
+    for current, following in itertools.pairwise(kept):
+        if current.id in keep_after and following.start > current.end:
+            content.append((current.end, following.start))
     for region in speech:
         for piece in _subtract(region, dropped_spans):
             if piece[1] - piece[0] >= params.cut_padding_s:

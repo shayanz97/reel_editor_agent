@@ -34,18 +34,21 @@ def _ends_with(text: str, marks: tuple[str, ...]) -> bool:
 
 
 def split_sentences(
-    words: Sequence[Word], max_words: int = DEFAULT_MAX_SEGMENT_WORDS
+    words: Sequence[Word],
+    max_words: int = DEFAULT_MAX_SEGMENT_WORDS,
+    splits_after: Collection[int] = (),
 ) -> list[Span]:
     """Split the transcript at sentence punctuation.
 
     Sentences longer than `max_words` are split at the clause mark (comma etc.) closest to
     their middle, recursively; without any clause mark they are split in the middle.
-    Depends only on the transcript, so spans are stable across versions.
+    `splits_after` forces a segment end after these word ids (correction `split_segment`).
+    Depends only on the transcript and those splits, so spans are stable across versions.
     """
     spans: list[Span] = []
     start = 0
     for i, w in enumerate(words):
-        if _ends_with(w.text, SENTENCE_END) or i == len(words) - 1:
+        if _ends_with(w.text, SENTENCE_END) or w.id in splits_after or i == len(words) - 1:
             spans.extend(_split_long(words[start : i + 1], max_words))
             start = i + 1
     return spans

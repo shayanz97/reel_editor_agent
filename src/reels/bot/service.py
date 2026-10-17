@@ -7,7 +7,7 @@ over) and reads back what changed, so it can tell the client.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -19,10 +19,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from reels.config import Settings
+from reels.db import queue
 from reels.db.clients import ClientError, create_client, get_client
 from reels.db.models import (
     Client,
     ClientUser,
+    Correction,
+    CorrectionStatus,
     Job,
     JobStatus,
     Project,
@@ -30,11 +33,27 @@ from reels.db.models import (
     Version,
     VersionStatus,
 )
+from reels.db.models import Transcript as TranscriptRow
+from reels.domain.corrections import (
+    AnyOperation,
+    CorrectionPlan,
+    Issue,
+    Note,
+    Resolved,
+)
+from reels.domain.corrections import apply as apply_ops
 from reels.domain.segments import Segment
-from reels.pipeline.runner import create_project
+from reels.domain.words import Word
+from reels.pipeline.runner import (
+    CORRECTION_STEP,
+    create_next_version,
+    create_project,
+    version_state,
+)
 from reels.pipeline.steps import ProjectPaths
 
 _SEGMENTS = TypeAdapter(list[Segment])
+_TEXTS = TypeAdapter(list[str])
 
 
 @dataclass(frozen=True)
@@ -127,6 +146,7 @@ class PreviewNotice:
     export: Path
     segments: list[Segment]
     duration_s: float | None
+    removed: list[str] = field(default_factory=list)  # texts of segments removed by corrections
 
 
 @dataclass(frozen=True)
@@ -150,7 +170,42 @@ class AdminJobNotice:
     version_number: int | None
 
 
-Notice = ProcessingNotice | PreviewNotice | FailureNotice | AdminJobNotice
+@dataclass(frozen=True)
+class CorrectionPlannedNotice:
+    correction_id: int
+    chat_id: int
+    version_number: int
+    operations: list[AnyOperation]
+
+
+@dataclass(frozen=True)
+class CorrectionQuestionNotice:
+    correction_id: int
+    chat_id: int
+    version_number: int
+    issues: list[Issue]
+    clarification: str | None
+
+
+@dataclass(frozen=True)
+class CorrectionFailedNotice:
+    correction_id: int
+    chat_id: int
+    error: str
+
+
+Notice = (
+    ProcessingNotice
+    | PreviewNotice
+    | FailureNotice
+    | AdminJobNotice
+    | CorrectionPlannedNotice
+    | CorrectionQuestionNotice
+    | CorrectionFailedNotice
+)
+
+_PLAN = TypeAdapter(CorrectionPlan)
+_ISSUES = TypeAdapter(list[Issue])
 
 
 def pending_notices(session: Session, app: Settings) -> list[Notice]:
@@ -185,6 +240,11 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
             if paths.segments.exists()
             else []
         )
+        removed = (
+            _TEXTS.validate_json(paths.removed_segments.read_text(encoding="utf-8"))
+            if paths.removed_segments.exists()
+            else []
+        )
         output = (v.cut_plan or {}).get("keep")
         duration = sum(r["end"] - r["start"] for r in output) if output else None
         notices.append(
@@ -197,6 +257,7 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
                 app.data_dir / v.export_path,
                 segments,
                 duration,
+                removed,
             )
         )
 
@@ -230,6 +291,42 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
             )
         )
 
+    corrections = session.execute(
+        select(Correction, Version, Project)
+        .join(Version, Version.id == Correction.version_id)
+        .join(Project, Project.id == Version.project_id)
+        .where(
+            Correction.notified_at.is_(None),
+            Correction.status.in_(
+                [
+                    CorrectionStatus.PLANNED,
+                    CorrectionStatus.NEEDS_CLARIFICATION,
+                    CorrectionStatus.REJECTED,
+                ]
+            ),
+            Project.telegram_chat_id.is_not(None),
+        )
+        .order_by(Correction.id)
+    ).all()
+    for c, v, p in corrections:
+        assert p.telegram_chat_id is not None
+        plan = c.plan or {}
+        if c.status is CorrectionStatus.PLANNED:
+            ops = _PLAN.validate_python({"operations": plan.get("operations", [])}).operations
+            notices.append(CorrectionPlannedNotice(c.id, p.telegram_chat_id, v.number, list(ops)))
+        elif c.status is CorrectionStatus.NEEDS_CLARIFICATION:
+            notices.append(
+                CorrectionQuestionNotice(
+                    c.id,
+                    p.telegram_chat_id,
+                    v.number,
+                    _ISSUES.validate_python(plan.get("issues", [])),
+                    plan.get("clarification"),
+                )
+            )
+        elif "error" in plan:  # rejected by the worker, not by the client
+            notices.append(CorrectionFailedNotice(c.id, p.telegram_chat_id, str(plan["error"])))
+
     jobs = session.execute(
         select(Job, Version, Project, Client)
         .outerjoin(Version, Version.id == Job.version_id)
@@ -260,6 +357,8 @@ def mark_notice_sent(session: Session, notice: Notice, message_id: int | None = 
             project = session.get(Project, notice.project_id)
             if project is not None:
                 project.notified_status = ProjectStatus.PROCESSING.value
+                if project.status_message_id is None:
+                    project.status_message_id = message_id
         case PreviewNotice():
             version = session.get(Version, notice.version_id)
             project = session.get(Project, notice.project_id)
@@ -279,6 +378,11 @@ def mark_notice_sent(session: Session, notice: Notice, message_id: int | None = 
             job = session.get(Job, notice.job_id)
             if job is not None:
                 job.admin_notified_at = now
+        case CorrectionPlannedNotice() | CorrectionQuestionNotice() | CorrectionFailedNotice():
+            correction = session.get(Correction, notice.correction_id)
+            if correction is not None:
+                correction.notified_at = now
+                correction.summary_message_id = message_id
 
 
 # --- buttons ------------------------------------------------------------------
@@ -357,6 +461,186 @@ def change_request(session: Session, version_id: int, telegram_user_id: int) -> 
     """'Ändern' pressed. Free-text corrections come with Etappe 4; until then the admin is told."""
     result, _, _ = _check_button(session, version_id, telegram_user_id)
     return result
+
+
+# --- corrections -------------------------------------------------------------------
+
+
+class CorrectionStart(StrEnum):
+    STARTED = "started"
+    NO_PROJECT = "no_project"
+    OUTDATED = "outdated"
+    BUSY = "busy"
+    APPROVED = "approved"
+    DUPLICATE = "duplicate"
+
+
+def _target_version(
+    session: Session, access: Access, chat_id: int, reply_to: int | None
+) -> tuple[Version, Project] | None:
+    """The version a correction text refers to: the preview it replies to, else the newest
+    project in this chat that has a preview."""
+    base = (
+        select(Version, Project)
+        .join(Project, Project.id == Version.project_id)
+        .where(Project.client_id == access.client_id, Project.telegram_chat_id == chat_id)
+    )
+    if reply_to is not None:
+        row = session.execute(base.where(Version.preview_message_id == reply_to)).first()
+        if row is None:
+            row = session.execute(
+                base.join(Correction, Correction.version_id == Version.id).where(
+                    Correction.summary_message_id == reply_to
+                )
+            ).first()
+        if row is not None:
+            return row[0], row[1]
+    row = session.execute(
+        base.where(Version.preview_sent_at.is_not(None)).order_by(Version.id.desc()).limit(1)
+    ).first()
+    return (row[0], row[1]) if row else None
+
+
+def start_correction(
+    session: Session,
+    access: Access,
+    *,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_to: int | None,
+) -> CorrectionStart:
+    """Register a free-text correction and queue its interpretation for the worker."""
+    target = _target_version(session, access, chat_id, reply_to)
+    if target is None:
+        return CorrectionStart.NO_PROJECT
+    version, project = target
+    if session.scalar(
+        select(Correction.id)
+        .join(Version, Version.id == Correction.version_id)
+        .where(Version.project_id == project.id, Correction.telegram_message_id == message_id)
+    ):
+        return CorrectionStart.DUPLICATE
+    if project.approved_at is not None:
+        return CorrectionStart.APPROVED
+    latest = session.scalar(
+        select(func.max(Version.number)).where(Version.project_id == project.id)
+    )
+    if version.number != latest:
+        newest = session.scalar(
+            select(Version).where(Version.project_id == project.id, Version.number == latest)
+        )
+        # A reply to an old preview while a newer one exists: refuse (4.6).
+        if reply_to is not None or newest is None or newest.preview_sent_at is not None:
+            return CorrectionStart.OUTDATED
+        return CorrectionStart.BUSY  # the newest version is still being rendered
+    if version.status is not VersionStatus.READY:
+        return CorrectionStart.BUSY
+
+    previous = session.scalar(
+        select(Correction).where(Correction.version_id == version.id).order_by(Correction.id.desc())
+    )
+    message_text = text.strip()
+    now = datetime.now(UTC)
+    if previous is not None:
+        if previous.status is CorrectionStatus.RECEIVED:
+            return CorrectionStart.BUSY
+        if previous.status is CorrectionStatus.NEEDS_CLARIFICATION:
+            # The answer to our question completes the earlier request.
+            message_text = f"{previous.message_text}\nNachtrag: {message_text}"
+        if previous.status in (CorrectionStatus.PLANNED, CorrectionStatus.NEEDS_CLARIFICATION):
+            previous.status = CorrectionStatus.REJECTED  # superseded by the new message
+            previous.notified_at = previous.notified_at or now
+
+    if queue.enqueue(session, version.id, CORRECTION_STEP) is None:
+        return CorrectionStart.BUSY
+    session.add(
+        Correction(
+            version_id=version.id,
+            message_text=message_text,
+            telegram_message_id=message_id,
+            status=CorrectionStatus.RECEIVED,
+        )
+    )
+    return CorrectionStart.STARTED
+
+
+@dataclass(frozen=True)
+class CorrectionResult:
+    decision: Decision
+    new_version: int | None = None
+    notes: tuple[str, ...] = ()
+    client_name: str | None = None
+    project_id: int | None = None
+    base_version: int | None = None
+
+
+def _correction_for_user(
+    session: Session, correction_id: int, telegram_user_id: int
+) -> tuple[Correction, ButtonResult, Version | None] | None:
+    correction = session.get(Correction, correction_id)
+    if correction is None:
+        return None
+    result, version, _ = _check_button(session, correction.version_id, telegram_user_id)
+    if result.decision is Decision.FORBIDDEN:
+        return None
+    return correction, result, version
+
+
+def apply_correction(
+    session: Session, correction_id: int, telegram_user_id: int
+) -> CorrectionResult:
+    """'Ausführen': create the next version from the confirmed plan. Never without this click."""
+    found = _correction_for_user(session, correction_id, telegram_user_id)
+    if found is None:
+        return CorrectionResult(Decision.FORBIDDEN)
+    correction, check, base = found
+    info = {
+        "client_name": check.client_name,
+        "project_id": check.project_id,
+        "base_version": check.version_number,
+    }
+    if correction.status is CorrectionStatus.APPLIED:
+        return CorrectionResult(Decision.ALREADY_APPROVED, **info)  # type: ignore[arg-type]
+    if correction.status is not CorrectionStatus.PLANNED:
+        return CorrectionResult(Decision.OUTDATED, **info)  # type: ignore[arg-type]
+    if check.decision is not Decision.OK or base is None:
+        return CorrectionResult(check.decision, **info)  # type: ignore[arg-type]
+
+    plan = correction.plan or {}
+    resolved = [Resolved.model_validate(r) for r in plan.get("resolved", [])]
+    notes = tuple(r.op.text for r in resolved if isinstance(r.op, Note))
+    step = plan.get("rerun_step")
+    new_number = None
+    if step:
+        row = session.get(TranscriptRow, base.transcript_id)
+        assert row is not None
+        words = [Word.model_validate(w) for w in row.words]
+        state = apply_ops(resolved, words, version_state(base))
+        new = create_next_version(session, base, state, step)
+        correction.result_version_id = new.id
+        new_number = new.number
+        project = session.get(Project, base.project_id)
+        assert project is not None
+        project.status_message_id = None  # a fresh status message for the new version
+        project.notified_status = ProjectStatus.REVIEW.value
+    correction.status = CorrectionStatus.APPLIED
+    return CorrectionResult(Decision.OK, new_number, notes, **info)  # type: ignore[arg-type]
+
+
+def reject_correction(
+    session: Session, correction_id: int, telegram_user_id: int
+) -> CorrectionResult:
+    """'Nochmal': drop the plan; the client writes the request again."""
+    found = _correction_for_user(session, correction_id, telegram_user_id)
+    if found is None:
+        return CorrectionResult(Decision.FORBIDDEN)
+    correction, _, _ = found
+    if correction.status not in (CorrectionStatus.PLANNED, CorrectionStatus.NEEDS_CLARIFICATION):
+        return CorrectionResult(Decision.OUTDATED)
+    correction.status = CorrectionStatus.REJECTED
+    correction.notified_at = correction.notified_at or datetime.now(UTC)
+    return CorrectionResult(Decision.OK)
 
 
 # --- admin --------------------------------------------------------------------

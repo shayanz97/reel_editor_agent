@@ -4,6 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from reels.domain.corrections import (
+    AnyOperation,
+    DeleteSegment,
+    DeleteWords,
+    Highlight,
+    Issue,
+    KeepPause,
+    MoveSubtitles,
+    Note,
+    ReplaceText,
+    RestoreSegment,
+    SplitSegment,
+    Unhighlight,
+)
 from reels.domain.segments import Segment
 
 TELEGRAM_TEXT_LIMIT = 4096
@@ -29,7 +43,10 @@ RECEIVED = "✅ Video empfangen. Ich melde mich, sobald die Vorschau fertig ist.
 PROCESSING = "⚙️ Video in Bearbeitung: Pausen schneiden, Untertitel setzen …"
 PREVIEW_READY_STATUS = "✅ Vorschau fertig (Version {number})."
 PREVIEW_CAPTION = "Vorschau · Version {number}"
-PREVIEW_QUESTION = "Passt alles? Dann tippe auf „Freigeben“. Sonst auf „Ändern“."
+PREVIEW_QUESTION = (
+    "Passt alles? Dann tippe auf „Freigeben“. "
+    "Wenn nicht, schreib mir einfach, was anders sein soll."
+)
 BUTTON_APPROVE = "✅ Freigeben"
 BUTTON_CHANGE = "✏️ Ändern"
 APPROVED = "Freigegeben 🎉 Hier ist dein fertiges Video in voller Qualität."
@@ -38,11 +55,95 @@ ALREADY_APPROVED = "Dieses Video ist bereits freigegeben."
 OUTDATED = "Diese Vorschau ist nicht mehr aktuell. Bitte nutze die neueste Version."
 NOT_READY = "Diese Version ist noch nicht fertig. Einen Moment bitte."
 FORBIDDEN = "Diese Vorschau gehört nicht zu deinem Konto."
-CHANGE_NOT_YET = (
-    "Änderungswünsche per Text kommen in Kürze. "
-    "Bis dahin schreib bitte deinem Ansprechpartner, was geändert werden soll. "
-    "Er ist schon informiert."
+CHANGE_PROMPT = (
+    "Schreib mir, was geändert werden soll. Zum Beispiel:\n"
+    "„In Satz 2 heißt es Kubernetes, Satz 3 raus.“"
 )
+
+# --- corrections -------------------------------------------------------------------
+
+CORRECTION_STARTED = "⏳ Ich schaue mir deine Änderungen an …"
+CORRECTION_BUSY = "Einen Moment, ich bin noch mit deiner letzten Änderung beschäftigt."
+CORRECTION_NO_PROJECT = "Ich habe gerade kein Video, das du ändern kannst. Schick mir ein Video."
+CORRECTION_SUMMARY = "Ich habe verstanden (bezogen auf Version {number}):"
+CORRECTION_CONFIRM = "Soll ich das so umsetzen?"
+BUTTON_APPLY = "✅ Ausführen"
+BUTTON_RETRY = "🔁 Nochmal"
+CORRECTION_APPLIED = "Alles klar, ich erstelle Version {number}."
+CORRECTION_NOTES_FORWARDED = "Deinen Hinweis habe ich ans Team weitergegeben."
+CORRECTION_RETRY = "Okay. Schreib mir einfach nochmal, was geändert werden soll."
+CORRECTION_QUESTION = "Da bin ich mir nicht sicher (Version {number}):"
+CORRECTION_QUESTION_END = "Schreib mir bitte genauer, was geändert werden soll."
+CORRECTION_FAILED = (
+    "❌ Deine Änderung konnte ich gerade nicht verarbeiten. Bitte schick sie nochmal."
+)
+CORRECTION_UNAVAILABLE = "Änderungen per Text sind gerade nicht verfügbar. Wir melden uns bei dir."
+
+_POSITIONS = {"lower_third": "unten", "center": "in die Mitte", "upper_third": "oben"}
+
+
+def describe_operation(op: AnyOperation) -> str:
+    match op:
+        case ReplaceText():
+            return f"Satz {op.segment}: „{op.find}“ → „{op.replace}“"
+        case DeleteSegment():
+            return f"Satz {op.segment} herausschneiden"
+        case RestoreSegment():
+            return f"Entfernten Satz E{op.removed} zurückholen"
+        case DeleteWords():
+            return f"Satz {op.segment}: „{op.find}“ herausschneiden"
+        case KeepPause():
+            return f"Pause nach Satz {op.segment} nicht kürzen"
+        case Highlight():
+            return f"Satz {op.segment}: „{op.find}“ hervorheben"
+        case Unhighlight():
+            if op.find is None:
+                return f"Satz {op.segment}: keine Hervorhebungen"
+            return f"Satz {op.segment}: „{op.find}“ nicht mehr hervorheben"
+        case MoveSubtitles():
+            return f"Untertitel {_POSITIONS[op.position]} setzen"
+        case SplitSegment():
+            return f"Satz {op.segment} nach „{op.after}“ teilen"
+        case Note():
+            return f"Hinweis ans Team: {op.text}"
+
+
+def correction_summary(operations: Sequence[AnyOperation], version_number: int) -> str:
+    lines = [CORRECTION_SUMMARY.format(number=version_number), ""]
+    lines += [f"{n}. {describe_operation(op)}" for n, op in enumerate(operations, start=1)]
+    lines += ["", CORRECTION_CONFIRM]
+    return "\n".join(lines)[:TELEGRAM_TEXT_LIMIT]
+
+
+def describe_issue(issue: Issue) -> str:
+    match issue.kind:
+        case "segment_missing":
+            return f"Einen Satz {issue.segment} gibt es nicht."
+        case "find_missing":
+            return f"In Satz {issue.segment} finde ich „{issue.find}“ nicht."
+        case "find_ambiguous":
+            return (
+                f"„{issue.find}“ kommt in Satz {issue.segment} mehrmals vor. "
+                "Welche Stelle meinst du?"
+            )
+        case "removed_missing":
+            return f"Einen entfernten Satz E{issue.segment} gibt es nicht."
+        case "split_at_end":
+            return f"Satz {issue.segment} endet schon nach „{issue.find}“."
+        case "nothing_to_do":
+            return "Ich habe keine konkrete Änderung erkannt."
+
+
+def correction_question(
+    issues: Sequence[Issue], clarification: str | None, version_number: int
+) -> str:
+    lines = [CORRECTION_QUESTION.format(number=version_number), ""]
+    lines += [f"• {describe_issue(i)}" for i in issues]
+    if clarification:
+        lines.append(f"• {clarification}")
+    lines += ["", CORRECTION_QUESTION_END]
+    return "\n".join(lines)[:TELEGRAM_TEXT_LIMIT]
+
 
 FAILED_GENERIC = (
     "❌ Beim Bearbeiten ist ein Fehler aufgetreten. Wir schauen uns das an und melden uns."
@@ -78,10 +179,17 @@ def failure_text(code: str | None, details: dict[str, float]) -> str:
     }.get(code or "", FAILED_GENERIC)
 
 
-def preview_messages(segments: Sequence[Segment], limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
-    """Numbered sentence list plus the question, split into messages below Telegram's limit."""
+def preview_messages(
+    segments: Sequence[Segment],
+    removed: Sequence[str] = (),
+    limit: int = TELEGRAM_TEXT_LIMIT,
+) -> list[str]:
+    """Numbered sentences (+ removed ones as E1 …) and the question, split below the limit."""
     lines = ["Sätze in dieser Version:", ""]
     lines += [f"{s.number}. {s.text}" for s in segments]
+    if removed:
+        lines += ["", "Entfernte Sätze:"]
+        lines += [f"E{n}. {text}" for n, text in enumerate(removed, start=1)]
     lines += ["", PREVIEW_QUESTION]
     messages: list[str] = []
     current = ""
@@ -109,7 +217,7 @@ ADMIN_JOB_FAILED = (
     "Kunde: {client} · Projekt {project} · Version {version}\n"
     "Ursache: {cause}"
 )
-ADMIN_CHANGE_REQUEST = "✏️ {client} möchte Änderungen an Projekt {project_id} (Version {number})."
+ADMIN_NOTE = "📝 Hinweis von {client} (Projekt {project_id}, Version {number}): {text}"
 ADMIN_DOWNLOAD_FAILED = "❌ Download fehlgeschlagen ({client}, Nachricht {message_id}): {cause}"
 ADMIN_HELP = (
     "Admin-Befehle:\n"

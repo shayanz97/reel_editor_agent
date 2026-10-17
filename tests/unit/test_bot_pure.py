@@ -39,6 +39,8 @@ def test_callback_roundtrip_and_rejects_garbage() -> None:
     approve, change = keyboard.inline_keyboard[0]
     assert parse_callback(approve.callback_data) == ("approve", 42)
     assert parse_callback(change.callback_data) == ("change", 42)
+    assert parse_callback("apply:7") == ("apply", 7)
+    assert parse_callback("retry:7") == ("retry", 7)
     for bad in (None, "", "approve", "approve:", "approve:x", "delete:1", "approve:-1"):
         assert parse_callback(bad) is None
 

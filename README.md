@@ -146,7 +146,16 @@ uv run python -m reels.worker                  # Worker (Terminal 2)
 - Ablauf: Video senden (am besten als Datei) → Statusnachricht wird aktualisiert
   (empfangen → in Bearbeitung → Vorschau fertig) → Vorschauvideo + nummerierte Sätze +
   Buttons „Freigeben“ / „Ändern“ → bei „Freigeben“ kommt der Export als Datei.
-- „Ändern“ informiert bis Etappe 4 nur den Admin-Chat.
+- Korrekturen: Der Kunde schreibt einfach, was anders sein soll (z. B. „In Satz 2 heißt es
+  Kubernetes, Satz 3 raus“), oder tippt erst auf „Ändern“. Der Worker übersetzt den Text per LLM
+  in erlaubte Operationen (`replace_text`, `delete_segment`, `restore_segment`, `delete_words`,
+  `keep_pause`, `highlight`, `unhighlight`, `move_subtitles`, `split_segment`, `note`) und prüft
+  sie gegen die Version. Der Bot zeigt, was verstanden wurde: „Ausführen“ erzeugt die nächste
+  Version, „Nochmal“ verwirft. Unklares wird zurückgefragt, nie geraten. Ohne Klick auf
+  „Ausführen“ ändert sich nichts.
+- Neu gerendert wird nur ab dem ersten betroffenen Schritt: Textkorrekturen schneiden nicht neu,
+  gelöschte Sätze schon. Die Transkription läuft nie erneut. `note` geht an den Admin-Chat.
+- Antwortet der Kunde auf eine ältere Vorschau, wird die Korrektur mit Hinweis abgelehnt.
 - Fehler: Der Kunde bekommt eine verständliche Nachricht (z. B. „Video zu lang“), der Admin-Chat
   Job-ID und Ursache.
 - Admin-Chat (`ADMIN_CHAT_ID`): `/kunde_neu <Name> [| Telegram-ID …]`, `/kunde_user <kunde> <id>`,

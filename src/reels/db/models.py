@@ -258,6 +258,10 @@ class Version(Base):
         JSONB, default=list, server_default=_EMPTY_JSON_ARRAY
     )
     subtitle_style: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Edits from corrections: removed_words, keep_pauses_after, splits_after, subtitle overrides.
+    edits: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT
+    )
     preview_path: Mapped[str | None] = mapped_column(Text)
     export_path: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -288,6 +292,9 @@ class Correction(Base):
     status: Mapped[CorrectionStatus] = mapped_column(
         StrEnumType(CorrectionStatus), default=CorrectionStatus.RECEIVED
     )
+    # Bot bookkeeping: when the client was told the outcome, and the summary message.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary_message_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
