@@ -4,7 +4,7 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 6 Code fertig** (mit Fakes getestet). Offen: Pixabay-Lizenzprüfung, echte Tests (LLM, Pixabay, Telegram) für Etappe 4–6, Qualitätstest aus Etappe 1.
+Status: **Alle Etappen gebaut.** Echte Tests (Telegram, LLM, Pixabay) für Etappe 3–6 am 2026-10-18 mit dem eigenen Konto durchgeführt, laut Auftraggeber funktioniert alles. Offen: Pixabay-Lizenzprüfung, Qualitätstest aus Etappe 1, Betrieb. Kurzanleitung: `docs/ANLEITUNG.md`.
 
 Offene Punkte früherer Etappen:
 - Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)

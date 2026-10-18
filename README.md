@@ -3,7 +3,7 @@
 Ein Kunde schickt ein kurzes Hochformat-Video per Telegram. Das System schneidet Pausen heraus,
 erzeugt Untertitel, schickt eine Vorschau zurück, nimmt Korrekturen als Freitext an und rendert
 neue Versionen bis zur Freigabe. Architektur und Konventionen: [CLAUDE.md](CLAUDE.md),
-Umsetzungsstand: [TASKS.md](TASKS.md).
+Umsetzungsstand: [TASKS.md](TASKS.md). Kurzanleitung mit allen Befehlen: [docs/ANLEITUNG.md](docs/ANLEITUNG.md).
 
 ## Einrichtung auf dem Mac (Apple Silicon)
 
