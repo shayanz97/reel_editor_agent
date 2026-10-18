@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import BaseMiddleware, Bot, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, FSInputFile, Message, TelegramObject
 from sqlalchemy import Engine
 
@@ -78,6 +78,10 @@ class AccessMiddleware(BaseMiddleware):
 
 async def on_start(message: Message) -> None:
     await message.answer(texts.START)
+
+
+async def on_help(message: Message) -> None:
+    await message.answer(texts.HELP)
 
 
 async def on_document(
@@ -472,6 +476,7 @@ def build_router() -> Router:
     router.message.middleware(access)
     router.callback_query.middleware(access)
     router.message.register(on_start, CommandStart())
+    router.message.register(on_help, Command("hilfe", "help"))
     glossary.register(router)
     router.message.register(on_document, F.document)
     router.message.register(on_compressed_video, F.video)

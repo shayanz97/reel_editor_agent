@@ -65,6 +65,8 @@ async def on_status(message: Message, engine: Engine) -> None:
 
 
 async def on_help(message: Message) -> None:
+    """In the admin chat: the client help and the admin commands."""
+    await message.answer(texts.HELP)
     await message.answer(texts.ADMIN_HELP)
 
 

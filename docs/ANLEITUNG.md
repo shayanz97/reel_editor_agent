@@ -54,9 +54,13 @@ Was man in Änderungswünschen sagen kann: Text korrigieren, Satz raus/zurück (
 Pause behalten, Wort hervorheben/nicht hervorheben, Untertitel oben/Mitte/unten, Satz teilen,
 Zwischenbild B… entfernen/ersetzen/einfügen, weniger/mehr/keine Zwischenbilder, Hinweis ans Team.
 
+Alle Befehle mit kurzer Erklärung stehen im Telegram-Menü (Menü-Taste neben dem Eingabefeld).
+Der Bot setzt Menü und Beschreibung bei jedem Start selbst.
+
 | Befehl | Zweck |
 | --- | --- |
 | `/start` | Begrüßung |
+| `/hilfe` | So funktioniert der Bot |
 | `/woerterbuch` | eigenes Wörterbuch anzeigen |
 | `/begriff_neu Kubernetes = Kubanetis, Cuber Netties` | Begriff mit falschen Schreibweisen anlegen |
 | `/begriff_aendern Kubernetes = Kubanetis` | falsche Schreibweisen ersetzen |
@@ -66,6 +70,8 @@ Zwischenbild B… entfernen/ersetzen/einfügen, weniger/mehr/keine Zwischenbilde
 | `/begriffe_export` | Wörterbuch als CSV |
 
 ## Telegram: Admin-Chat (`ADMIN_CHAT_ID`)
+
+Im Admin-Chat zeigt die Menü-Taste zusätzlich die Admin-Befehle; `/admin` oder `/hilfe` zeigt beide Teile.
 
 | Befehl | Zweck |
 | --- | --- |

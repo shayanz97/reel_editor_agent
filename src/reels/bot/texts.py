@@ -32,8 +32,53 @@ TELEGRAM_TEXT_LIMIT = 4096
 START = (
     "Hi! Schick mir dein Video (bis 3 Minuten, Hochformat).\n"
     "Am besten als Datei: Büroklammer → Datei. So bleibt die Qualität erhalten.\n\n"
-    "Ich schneide Pausen raus, setze Untertitel und schicke dir eine Vorschau zur Freigabe."
+    "Ich schneide Pausen raus, setze Untertitel und schicke dir eine Vorschau zur Freigabe.\n"
+    "Mehr dazu: /hilfe – alle Befehle über die Menü-Taste."
 )
+HELP = (
+    "So funktioniert’s:\n\n"
+    "1. Schick mir dein Video (bis 3 Minuten, Hochformat), am besten als Datei.\n"
+    "2. Ich schneide Pausen raus und setze Untertitel. Du bekommst eine Vorschau mit "
+    "nummerierten Sätzen.\n"
+    "3. Passt alles? Tippe auf „Freigeben“. Sonst schreib einfach, was anders sein soll, "
+    "z. B. „Satz 3 raus“ oder „In Satz 2 heißt es Kubernetes“.\n"
+    "4. Nach der Freigabe bekommst du 3 Cover zur Auswahl und einen Beitragstext.\n\n"
+    "Fotos und Clips mit #broll in der Beschreibung landen in deiner Bibliothek für "
+    "Zwischenbilder.\n\n"
+    "Alle Befehle findest du über die Menü-Taste neben dem Eingabefeld."
+)
+
+# Shown by Telegram before the first message (description) and in the bot profile (short).
+BOT_SHORT_DESCRIPTION = (
+    "Schick ein Video: Ich schneide Pausen raus, setze Untertitel und bereite den Post vor."
+)
+BOT_DESCRIPTION = (
+    "Dein Assistent für Instagram-Reels.\n\n"
+    "Schick ein kurzes Video (bis 3 Minuten). Du bekommst eine geschnittene Vorschau mit "
+    "Untertiteln, kannst Änderungen einfach per Text wünschen und erhältst nach der Freigabe "
+    "Cover-Vorschläge und einen Beitragstext.\n\n"
+    "Tippe auf Start und dann auf /hilfe."
+)
+
+# Command menu: (command, short description). Telegram: names a-z0-9_, max 256 chars text.
+CLIENT_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("start", "Begrüßung und Start"),
+    ("hilfe", "So funktioniert der Bot"),
+    ("woerterbuch", "Dein Wörterbuch anzeigen"),
+    ("begriff_neu", "Begriff anlegen: Begriff = falsche Schreibweise"),
+    ("begriff_aendern", "Falsche Schreibweisen eines Begriffs ändern"),
+    ("begriff_loeschen", "Begriff aus dem Wörterbuch löschen"),
+    ("begriff_ok", "Vorgeschlagenen Begriff bestätigen"),
+    ("begriffe", "Mehrere Begriffe auf einmal anlegen"),
+    ("begriffe_export", "Wörterbuch als CSV-Datei"),
+)
+ADMIN_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("kunde_neu", "Admin: Kunde anlegen (Name | Telegram-ID)"),
+    ("kunde_user", "Admin: Nutzer für einen Kunden freischalten"),
+    ("status", "Admin: Queue und Projekte"),
+    ("admin", "Admin: alle Admin-Befehle"),
+)
+
 NOT_ALLOWED = (
     "Dieser Bot ist nur für freigeschaltete Kunden. Bitte melde dich bei deinem Ansprechpartner."
 )

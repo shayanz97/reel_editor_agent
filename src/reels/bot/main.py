@@ -15,9 +15,11 @@ import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.exceptions import TelegramAPIError
 from sqlalchemy import Engine
 
 from reels.bot.handlers import admin, client
+from reels.bot.menu import setup_menu
 from reels.bot.notifier import Notifier, stop
 from reels.config import Settings, get_settings
 from reels.db.session import make_engine
@@ -47,6 +49,10 @@ async def run(app: Settings, engine: Engine) -> None:
     bot = local_bot(app)
     me = await bot.get_me()
     log.info("bot_started", extra={"username": me.username, "api": app.telegram_api_url})
+    try:
+        await setup_menu(bot, app)
+    except TelegramAPIError:
+        log.exception("bot_menu_failed")  # the bot works without a menu
     notifier = asyncio.create_task(Notifier(bot, engine, app).run())
     try:
         await build_dispatcher(app).start_polling(
