@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -17,7 +17,7 @@ from typing import Any, Protocol
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session
 
-from reels.broll import planner, textcards
+from reels.broll import library, planner, textcards
 from reels.broll.check import check_image
 from reels.broll.pixabay import PixabayClient, StockUnavailableError
 from reels.config import Settings, get_settings
@@ -48,7 +48,17 @@ from reels.db.models import (
 from reels.domain import vocab
 from reels.domain.broll_rules import BrollRules, Candidate, word_span
 from reels.domain.broll_rules import select as select_slots
-from reels.domain.corrections import VersionState, removed_segments, rerun_step, resolve
+from reels.domain.corrections import (
+    AddBroll,
+    RemoveBroll,
+    ReplaceBroll,
+    Resolved,
+    SetBrollCoverage,
+    VersionState,
+    removed_segments,
+    rerun_step,
+    resolve,
+)
 from reels.domain.cutplan import CutPlan
 from reels.domain.glossary import GlossaryTerm, apply_glossary_text, build_prompt_hint
 from reels.domain.segments import Segment, Span, number_segments, split_sentences
@@ -295,6 +305,8 @@ def execute_job(
                     from reels.pipeline.cleanup import cleanup_expired
 
                     metrics = cleanup_expired(session, app.data_dir)
+                elif step == library.INDEX_STEP:
+                    metrics = library.index_pending(session, app, providers.llm())
                 else:
                     if version is None or project is None:
                         raise PermanentStepError(f"job {job_id} has no version")
@@ -680,13 +692,17 @@ def step_highlights(ctx: StepContext) -> None:
 # --- B-roll --------------------------------------------------------------------------------
 
 
-def _broll_rules(settings: ClientSettings) -> BrollRules:
+def _broll_rules(settings: ClientSettings, state: VersionState | None = None) -> BrollRules:
+    """Client rules; a version may override the coverage (correction set_broll_coverage)."""
     b = settings.broll
+    coverage = b.max_coverage
+    if state is not None and state.broll_coverage is not None:
+        coverage = state.broll_coverage
     return BrollRules(
         min_start_s=b.min_start_s,
         min_duration_s=b.min_duration_s,
         max_duration_s=b.max_duration_s,
-        max_coverage=b.max_coverage,
+        max_coverage=coverage,
         min_gap_s=b.min_gap_s,
     )
 
@@ -835,11 +851,15 @@ def _find_stock(
     llm: LLMProvider | None,
     stock: PixabayClient | None,
 ) -> tuple[BrollAsset | None, float | None, str]:
-    """First stock clip whose preview passes the vision check; else (None, None, reason)."""
-    if stock is None:
-        return None, None, "no_stock_key"
+    """The client's own library first, then stock: the first candidate whose preview passes
+    the vision check; else (None, None, reason)."""
     if llm is None:
         return None, None, "no_check"
+    own = _find_in_library(ctx, placement, context, rules, llm)
+    if own is not None:
+        return own[0], own[1], ""
+    if stock is None:
+        return None, None, "no_stock_key"
     try:
         hits = stock.search(placement.query or placement.idea, rules.max_duration_s)
     except StockUnavailableError as exc:
@@ -866,9 +886,36 @@ def _find_stock(
     return None, None, "no_match"
 
 
-def _overlays(ctx: StepContext) -> list[Overlay]:
-    """Ready placements on the current output timeline, rules applied again (a correction
-    may have cut words: their B-roll disappears)."""
+LIBRARY_HITS_CHECKED = 3
+
+
+def _find_in_library(
+    ctx: StepContext,
+    placement: BrollPlacement,
+    context: str,
+    rules: BrollRules,
+    llm: LLMProvider,
+) -> tuple[BrollAsset, float] | None:
+    try:
+        (vector,) = llm.embed([f"{placement.idea} {placement.query or ''}".strip()])
+        hits = library.search(
+            ctx.session, ctx.client.id, vector, rules.min_duration_s, LIBRARY_HITS_CHECKED
+        )
+    except Exception as exc:  # no embedding model etc.: fall back to stock
+        log.warning("library_search_failed", extra={"error": str(exc)})
+        return None
+    for asset in hits:
+        if asset.thumbnail is None:
+            continue
+        score = check_image(llm, ctx.path(asset.thumbnail), placement.idea, context)
+        if score >= ctx.settings.broll.min_score:
+            return asset, float(score)
+    return None
+
+
+def _overlays(ctx: StepContext) -> list[tuple[int, Overlay]]:
+    """(B-number, overlay) for ready placements on the current output timeline, rules applied
+    again (a correction may have cut words: their B-roll disappears)."""
     if not ctx.settings.broll.enabled:
         return []
     ready = [p for p in _placements(ctx, PlacementStatus.READY) if p.asset_id is not None]
@@ -883,13 +930,16 @@ def _overlays(ctx: StepContext) -> list[Overlay]:
             candidates.append(Candidate(key=p.id, start=span[0], end=span[1], priority=p.priority))
     by_id = {p.id: p for p in ready}
     overlays = []
-    for slot in select_slots(candidates, timeline.duration, _broll_rules(ctx.settings)):
-        asset = ctx.session.get(BrollAsset, by_id[slot.key].asset_id)
+    rules = _broll_rules(ctx.settings, version_state(ctx.version))
+    for slot in select_slots(candidates, timeline.duration, rules):
+        placement = by_id[slot.key]
+        asset = ctx.session.get(BrollAsset, placement.asset_id)
         if asset is None or asset.path is None:
             continue
-        overlays.append(
-            Overlay(ctx.path(asset.path), slot.start, slot.end, still=asset.media_type == "image")
+        overlay = Overlay(
+            ctx.path(asset.path), slot.start, slot.end, still=asset.media_type == "image"
         )
+        overlays.append((placement.number, overlay))
     return overlays
 
 
@@ -946,16 +996,21 @@ def step_correction(ctx: StepContext) -> None:
         )
         for n, span in enumerate(removed, start=1)
     ]
+    shown = broll_lines(ctx.session, ctx.version)
+    broll_text = "\n".join(f"B{n}: {p.card_text or p.idea}" for n, p in shown) or "keine"
     prompt = load_prompt(
         "corrections",
         version=str(ctx.version.number),
+        broll=broll_text,
         segments="\n".join(f"{s.number}: {s.text}" for s in segments),
         removed="\n".join(removed_lines) or "keine",
         message=correction.message_text,
     )
     used_before = len(llm.usage)
     response = llm.structured("corrections", prompt, CorrectionResponse)
-    resolved, issues = resolve(response.operations, transcript.words, segments, removed, state)
+    resolved, issues = resolve(
+        response.operations, transcript.words, segments, removed, state, [n for n, _ in shown]
+    )
     understood = bool(resolved) and not issues and not response.clarification
     correction.plan = {
         "operations": [op.model_dump(mode="json") for op in response.operations],
@@ -1152,6 +1207,74 @@ def step_post_revise(ctx: StepContext) -> None:
     )
 
 
+def broll_lines(session: Session, version: Version) -> list[tuple[int, BrollPlacement]]:
+    """Placements shown to the client for this version (the ones rendered, if known)."""
+    rows = session.scalars(
+        select(BrollPlacement)
+        .where(
+            BrollPlacement.version_id == version.id,
+            BrollPlacement.status == PlacementStatus.READY,
+        )
+        .order_by(BrollPlacement.number)
+    ).all()
+    rendered = version.edits.get("broll_rendered")
+    return [(p.number, p) for p in rows if rendered is None or p.number in rendered]
+
+
+def apply_broll_edits(session: Session, version: Version, resolved: Sequence[Resolved]) -> None:
+    """remove/replace/add_broll and set_broll_coverage on the placements of a new version."""
+    placements = {
+        p.number: p
+        for p in session.scalars(
+            select(BrollPlacement).where(BrollPlacement.version_id == version.id)
+        )
+    }
+    next_number = max(placements, default=0) + 1
+    for r in resolved:
+        op = r.op
+        if isinstance(op, RemoveBroll) and op.broll in placements:
+            session.delete(placements.pop(op.broll))
+        elif isinstance(op, ReplaceBroll) and op.broll in placements:
+            p = placements[op.broll]
+            p.idea, p.card_text = op.idea, op.card_text
+            p.kind = "textcard" if op.card_text else "stock"
+            p.query = None if op.card_text else (op.query.strip() or op.idea)
+            p.asset_id, p.score, p.reason = None, None, None
+            p.status = PlacementStatus.PLANNED
+        elif isinstance(op, AddBroll) and r.word_ids:
+            placements[next_number] = BrollPlacement(
+                version_id=version.id,
+                number=next_number,
+                first_word=r.word_ids[0],
+                last_word=r.word_ids[-1],
+                kind="textcard" if op.card_text else "stock",
+                idea=op.idea,
+                query=None if op.card_text else (op.query.strip() or op.idea),
+                card_text=op.card_text,
+                priority=1,  # asked for by the client
+                status=PlacementStatus.PLANNED,
+            )
+            session.add(placements[next_number])
+            next_number += 1
+        elif isinstance(op, SetBrollCoverage) and op.coverage > 0:
+            # More room: offer the planner's other suggestions; the rules pick at render time.
+            taken = {(p.first_word, p.last_word) for p in placements.values()}
+            for c in version.edits.get("broll_candidates", []):
+                if (c["first_word"], c["last_word"]) in taken:
+                    continue
+                placements[next_number] = BrollPlacement(
+                    version_id=version.id, number=next_number, first_word=c["first_word"],
+                    last_word=c["last_word"], kind=c["kind"], idea=c["idea"], query=c["query"],
+                    card_text=c["card_text"], priority=c["priority"],
+                    status=PlacementStatus.PLANNED,
+                )  # fmt: skip
+                session.add(placements[next_number])
+                taken.add((c["first_word"], c["last_word"]))
+                next_number += 1
+    version.edits = {k: v for k, v in version.edits.items() if k != "broll_rendered"}
+    session.flush()
+
+
 def create_next_version(
     session: Session, base: Version, state: VersionState, from_step: str
 ) -> Version:
@@ -1194,7 +1317,10 @@ def create_next_version(
 
 def step_render(ctx: StepContext) -> None:
     vpaths = ctx.paths.version(ctx.version.number)
-    overlays = _overlays(ctx)
+    numbered = _overlays(ctx)
+    overlays = [o for _, o in numbered]
+    # The preview lists exactly the B-roll that is in the video.
+    ctx.version.edits = {**ctx.version.edits, "broll_rendered": [n for n, _ in numbered]}
     export = steps.render_step(
         _original(ctx),
         _probe(ctx),

@@ -19,13 +19,13 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from reels.broll import library
 from reels.config import Settings
 from reels.db import queue
 from reels.db.clients import ClientError, create_client, get_client
 from reels.db.glossary import add_term
 from reels.db.models import (
     BrollAsset,
-    BrollPlacement,
     BrollSource,
     Client,
     ClientUser,
@@ -34,7 +34,6 @@ from reels.db.models import (
     GlossaryStatus,
     Job,
     JobStatus,
-    PlacementStatus,
     Project,
     ProjectStatus,
     PublishPackage,
@@ -59,6 +58,8 @@ from reels.domain.words import Word, normalize_token
 from reels.pipeline.runner import (
     CORRECTION_STEP,
     POST_REVISE_STEP,
+    apply_broll_edits,
+    broll_lines,
     create_next_version,
     create_project,
     next_step,
@@ -141,6 +142,33 @@ def register_video(
     project.status_message_id = status_message_id
     project.notified_status = ProjectStatus.RECEIVED.value
     return project.id, version.id
+
+
+# --- B-roll library uploads (6.11) ---------------------------------------------------
+
+
+def register_broll(
+    session: Session,
+    access: Access,
+    source: Path,
+    media_type: str,
+    app: Settings,
+    *,
+    chat_id: int,
+    message_id: int,
+) -> int | None:
+    """Store a #broll upload in the client's library; None if this message was seen before."""
+    if library.is_known_upload(session, chat_id, message_id):
+        return None
+    asset = library.register_upload(
+        session,
+        access.client_id,
+        source,
+        media_type,
+        app,
+        meta={"telegram_chat_id": chat_id, "telegram_message_id": message_id},
+    )
+    return asset.id
 
 
 # --- notifications --------------------------------------------------------------
@@ -471,18 +499,15 @@ MAX_IDEA_CHARS = 40
 
 
 def _broll_lines(session: Session, version_id: int, segments: Sequence[Segment]) -> list[str]:
-    """Ready B-roll of a version, with the sentence it belongs to and where it comes from."""
-    rows = session.execute(
-        select(BrollPlacement, BrollAsset)
-        .join(BrollAsset, BrollAsset.id == BrollPlacement.asset_id)
-        .where(
-            BrollPlacement.version_id == version_id,
-            BrollPlacement.status == PlacementStatus.READY,
-        )
-        .order_by(BrollPlacement.number)
-    ).all()
+    """B-roll in the video, with the sentence it belongs to and where it comes from."""
+    version = session.get(Version, version_id)
+    if version is None:
+        return []
     lines = []
-    for placement, asset in rows:
+    for _, placement in broll_lines(session, version):
+        asset = session.get(BrollAsset, placement.asset_id) if placement.asset_id else None
+        if asset is None:
+            continue
         segment = next(
             (s for s in segments if s.first_word <= placement.first_word <= s.last_word), None
         )
@@ -818,6 +843,7 @@ def apply_correction(
         words = [Word.model_validate(w) for w in row.words]
         state = apply_ops(resolved, words, version_state(base))
         new = create_next_version(session, base, state, step)
+        apply_broll_edits(session, new, resolved)
         correction.result_version_id = new.id
         new_number = new.number
         project = session.get(Project, base.project_id)

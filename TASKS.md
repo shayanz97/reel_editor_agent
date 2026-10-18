@@ -4,7 +4,7 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 6** – Teil 1 (Pixabay, Textkarten, Regeln, Rendern) fertig; Teil 2 (Bibliothek, Korrekturen: 6.4, 6.10, 6.11) offen.
+Status: **Etappe 6 Code fertig** (mit Fakes getestet). Offen: Pixabay-Lizenzprüfung, echte Tests (LLM, Pixabay, Telegram) für Etappe 4–6, Qualitätstest aus Etappe 1.
 
 Offene Punkte früherer Etappen:
 - Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)
@@ -165,14 +165,14 @@ Offene Punkte früherer Etappen:
 - [x] 6.1 Migration: `broll_assets` (mit pgvector-Embedding), `broll_placements`
 - [x] 6.2 `domain/broll_rules.py`: keine B-roll in den ersten 2–3 s, 1,5–4 s pro Stelle, Gesamtanteil ≤ `broll.max_coverage`, Mindestabstand
 - [x] 6.3 `broll/planner.py`: LLM schlägt Stellen vor (Wortbereich, Bildidee, englische Suchanfrage, Typ, Priorität), Code wendet die Regeln an
-- [ ] 6.4 `broll/library.py`: Kundenbibliothek, Indexierung (Frames → Beschreibung per Bildeingabe → Embedding), Ähnlichkeitssuche
+- [x] 6.4 `broll/library.py`: Kundenbibliothek, Indexierung (Frames → Beschreibung per Bildeingabe → Embedding), Ähnlichkeitssuche
 - [x] 6.5 `broll/pixabay.py` (statt Pexels, Entscheidung 2026-10-18): Suche (Hochformat bevorzugt, Mindestlänge), Suchergebnisse 24 h cachen (Pixabay-Vorgabe), Download in den Cache, Quell-URL speichern
 - [x] 6.6 `broll/textcards.py`: Textkarten aus HTML-Vorlage per Playwright, als kurzes Video
 - [x] 6.7 Prüfung: Vorschaubild gegen Bildidee bewerten, unter Schwellwert verwerfen
 - [x] 6.8 Rendering: Vollbild-Overlay ohne Ton, kurze Überblendung, Untertitel darüber
 - [x] 6.9 Vorschau zeigt B-roll-Liste (`[B1] Satz 4 · Serverraum (Pixabay)`)
-- [ ] 6.10 Korrektur-Operationen `remove_broll`, `replace_broll`, `add_broll`, `set_broll_coverage`
-- [ ] 6.11 `#broll`: Kunde schickt Clips/Fotos, sie landen indexiert in seiner Bibliothek
+- [x] 6.10 Korrektur-Operationen `remove_broll`, `replace_broll`, `add_broll`, `set_broll_coverage`
+- [x] 6.11 `#broll`: Kunde schickt Clips/Fotos, sie landen indexiert in seiner Bibliothek
 
 **Abnahme**
 - B-roll-Regeln sind unit-getestet

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path, PurePosixPath
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi", ".3gp"}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+_BROLL_TAG = re.compile(r"(?<!\w)#broll(?!\w)", re.IGNORECASE)
 
 
 def to_host_path(file_path: str, container_prefix: str, host_dir: Path) -> Path:
@@ -31,3 +34,14 @@ def looks_like_video(file_name: str | None, mime_type: str | None) -> bool:
     if mime_type and mime_type.startswith("video/"):
         return True
     return bool(file_name) and Path(file_name or "").suffix.lower() in VIDEO_SUFFIXES
+
+
+def looks_like_image(file_name: str | None, mime_type: str | None) -> bool:
+    if mime_type and mime_type.startswith("image/"):
+        return True
+    return bool(file_name) and Path(file_name or "").suffix.lower() in IMAGE_SUFFIXES
+
+
+def has_broll_tag(caption: str | None) -> bool:
+    """`#broll` in the caption: the file goes into the client's B-roll library."""
+    return bool(caption) and _BROLL_TAG.search(caption or "") is not None

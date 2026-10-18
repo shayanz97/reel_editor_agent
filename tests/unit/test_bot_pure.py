@@ -89,3 +89,12 @@ def test_admin_texts() -> None:
     )
     status = texts.admin_status({"queued": 2}, {"review": 1}, 0, 75)
     assert "queued 2" in status and "1:15 min" in status
+
+
+def test_broll_tag_and_image_detection() -> None:
+    from reels.bot.files import has_broll_tag, looks_like_image
+
+    assert has_broll_tag("Neuer Clip #broll") and has_broll_tag("#BRoll")
+    assert not has_broll_tag("#brollx") and not has_broll_tag(None) and not has_broll_tag("broll")
+    assert looks_like_image("a.HEIC", None) and looks_like_image(None, "image/png")
+    assert not looks_like_image("a.mp4", "video/mp4")

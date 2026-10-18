@@ -82,6 +82,33 @@ class Note(_Op):
     text: str  # forwarded to the team, changes nothing in the video
 
 
+class RemoveBroll(_Op):
+    op: Literal["remove_broll"]
+    broll: int  # B-number from the preview
+
+
+class ReplaceBroll(_Op):
+    op: Literal["replace_broll"]
+    broll: int
+    idea: str  # what should be seen instead (German)
+    query: str  # stock search (English); empty for a text card
+    card_text: str | None  # text card instead of a clip
+
+
+class AddBroll(_Op):
+    op: Literal["add_broll"]
+    segment: int
+    find: str | None  # the words it belongs to; None: the whole segment
+    idea: str
+    query: str
+    card_text: str | None
+
+
+class SetBrollCoverage(_Op):
+    op: Literal["set_broll_coverage"]
+    coverage: float  # share of the video, 0 = no B-roll
+
+
 AnyOperation = (
     ReplaceText
     | DeleteSegment
@@ -93,6 +120,10 @@ AnyOperation = (
     | MoveSubtitles
     | SplitSegment
     | Note
+    | RemoveBroll
+    | ReplaceBroll
+    | AddBroll
+    | SetBrollCoverage
 )
 Operation = Annotated[AnyOperation, Field(discriminator="op")]
 
@@ -114,6 +145,11 @@ RERUN_STEP: dict[str, str | None] = {
     "unhighlight": "subtitles",
     "move_subtitles": "subtitles",
     "note": None,
+    # B-roll edits change placements; assets are fetched again only for new or replaced spots.
+    "remove_broll": "broll_fetch",
+    "replace_broll": "broll_fetch",
+    "add_broll": "broll_fetch",
+    "set_broll_coverage": "broll_fetch",
 }
 # Segments are always recomputed: cheap, and the preview's sentence list comes from them.
 MIN_RERUN_STEP = "segments"
@@ -139,6 +175,7 @@ class VersionState(BaseModel):
     keep_pauses_after: set[int] = Field(default_factory=set)
     splits_after: set[int] = Field(default_factory=set)
     subtitle: dict[str, Any] = Field(default_factory=dict)  # overrides of SubtitleSettings
+    broll_coverage: float | None = None  # overrides broll.max_coverage for this version
 
     def edits(self) -> dict[str, Any]:
         """JSON for versions.edits."""
@@ -147,6 +184,7 @@ class VersionState(BaseModel):
             "keep_pauses_after": sorted(self.keep_pauses_after),
             "splits_after": sorted(self.splits_after),
             "subtitle": dict(self.subtitle),
+            "broll_coverage": self.broll_coverage,
         }
 
     @classmethod
@@ -160,6 +198,7 @@ class VersionState(BaseModel):
             keep_pauses_after=set(edits.get("keep_pauses_after", [])),
             splits_after=set(edits.get("splits_after", [])),
             subtitle=dict(edits.get("subtitle", {})),
+            broll_coverage=edits.get("broll_coverage"),
         )
 
 
@@ -179,6 +218,8 @@ IssueKind = Literal[
     "removed_missing",
     "split_at_end",
     "nothing_to_do",
+    "broll_missing",
+    "coverage_invalid",
 ]
 
 
@@ -227,8 +268,12 @@ def resolve(
     segments: Sequence[Segment],
     removed: Sequence[Span],
     state: VersionState,
+    broll_numbers: Collection[int] = (),
 ) -> tuple[list[Resolved], list[Issue]]:
-    """Validate operations against the base version; collect issues instead of guessing."""
+    """Validate operations against the base version; collect issues instead of guessing.
+
+    `broll_numbers` are the B-numbers shown in the base version's preview.
+    """
     by_number = {s.number: s for s in segments}
     resolved: list[Resolved] = []
     issues: list[Issue] = []
@@ -236,6 +281,20 @@ def resolve(
     for op in plan_ops:
         if isinstance(op, (MoveSubtitles, Note)):
             resolved.append(Resolved(op=op))
+            continue
+        if isinstance(op, (RemoveBroll, ReplaceBroll)):
+            if op.broll not in broll_numbers:
+                issues.append(Issue(kind="broll_missing", segment=op.broll))
+            elif isinstance(op, ReplaceBroll) and not (op.query.strip() or op.card_text):
+                issues.append(Issue(kind="nothing_to_do"))
+            else:
+                resolved.append(Resolved(op=op))
+            continue
+        if isinstance(op, SetBrollCoverage):
+            if 0.0 <= op.coverage <= 1.0:
+                resolved.append(Resolved(op=op))
+            else:
+                issues.append(Issue(kind="coverage_invalid"))
             continue
         if isinstance(op, RestoreSegment):
             if not 1 <= op.removed <= len(removed):
@@ -256,7 +315,10 @@ def resolve(
         if isinstance(op, (DeleteSegment, KeepPause)):
             resolved.append(Resolved(op=op, word_ids=segment_ids))
             continue
-        if isinstance(op, Unhighlight) and op.find is None:
+        if isinstance(op, (Unhighlight, AddBroll)) and op.find is None:
+            if isinstance(op, AddBroll) and not (op.query.strip() or op.card_text):
+                issues.append(Issue(kind="nothing_to_do"))
+                continue
             resolved.append(Resolved(op=op, word_ids=segment_ids))
             continue
 
@@ -318,4 +380,7 @@ def apply(resolved: Sequence[Resolved], words: Sequence[Word], state: VersionSta
             new.subtitle["position"] = op.position
         elif isinstance(op, SplitSegment):
             new.splits_after.add(r.word_ids[-1])
+        elif isinstance(op, SetBrollCoverage):
+            new.broll_coverage = op.coverage
+        # remove/replace/add_broll change placements (rows), applied by the pipeline runner.
     return new

@@ -75,3 +75,8 @@ class BrollPlanResponse(BaseModel):
 class AssetCheck(BaseModel):
     score: int
     reason: str
+
+
+class AssetDescription(BaseModel):
+    description: str
+    tags: list[str]

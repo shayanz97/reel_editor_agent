@@ -15,7 +15,9 @@ REELS_TEST_PROMPTS  file that gets every prompt the fake LLM receives
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -28,6 +30,7 @@ from reels.domain.words import Transcript
 from reels.llm.base import LLMUsage
 from reels.llm.schemas import (
     AssetCheck,
+    AssetDescription,
     BrollPlanResponse,
     BrollSuggestion,
     CorrectionResponse,
@@ -81,6 +84,25 @@ class FileNotifier:
                 fh.write(text.replace("\n", " ") + "\n")
 
 
+def _bag_of_words(text: str, dim: int = 1536) -> list[float]:
+    """Deterministic toy embedding: shared words -> similar vectors."""
+    vector = [0.0] * dim
+    for word in text.lower().replace(",", " ").split():
+        vector[int(hashlib.sha1(word.encode()).hexdigest(), 16) % dim] += 1.0
+    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+    return [v / norm for v in vector]
+
+
+def _describe(images: list[Path]) -> dict[str, Any]:
+    """Red images are 'server rooms', blue ones 'beaches' (enough to test the ranking)."""
+    import cv2
+
+    b, _, r = (float(c) for c in cv2.imread(str(images[0])).mean(axis=(0, 1)))
+    if r > b:
+        return {"description": "Serverraum mit Servern und Lichtern", "tags": ["server", "technik"]}
+    return {"description": "Strand am Meer", "tags": ["beach", "urlaub"]}
+
+
 class FakeLLM:
     def __init__(self) -> None:
         self.usage: list[LLMUsage] = []
@@ -114,6 +136,8 @@ class FakeLLM:
             return BrollPlanResponse(suggestions=[BrollSuggestion(**i) for i in items])
         if task == "broll_check":
             return AssetCheck(score=int(os.environ.get("REELS_TEST_BROLL_SCORE", "8")), reason="t")
+        if task == "broll_describe":
+            return AssetDescription(**_describe(images or []))
         if task == "vocab":
             return VocabResponse.model_validate_json(
                 os.environ.get("REELS_TEST_VOCAB", '{"items": []}')
@@ -135,7 +159,7 @@ class FakeLLM:
         return HighlightPlan(segments=items)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[0.0] for _ in texts]
+        return [_bag_of_words(t) for t in texts]
 
 
 def fake_stock() -> PixabayClient | None:

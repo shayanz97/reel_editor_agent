@@ -204,9 +204,18 @@ uv run reels client set demo broll.max_coverage=0.2 broll.min_gap_s=4
   Stock-Clips kommen von **Pixabay** (`PIXABAY_API_KEY`): Hochformat bevorzugt, Vorschaubild per
   Vision-Modell gegen die Bildidee geprüft (`broll.min_score`, 0–10). Passt nichts, wird die
   Stelle **übersprungen** statt etwas Unpassendes einzusetzen. Ohne Schlüssel: nur Textkarten.
+- **Eigene Bibliothek:** Der Kunde schickt Clips oder Fotos mit `#broll` in der Beschreibung
+  (als Datei, Video oder Foto). Ein Worker-Job (`broll_index`) beschreibt sie per Vision-Modell
+  und speichert ein Embedding (`OPENAI_MODEL_EMBED`, pgvector). Bei jeder Stelle werden zuerst die
+  ähnlichsten eigenen Clips geprüft, erst dann Pixabay. Die Ähnlichkeit bestimmt nur die
+  Reihenfolge, die Bildprüfung entscheidet.
+- **Korrekturen:** `remove_broll` („B2 raus“), `replace_broll` („B1 lieber ein Büro“),
+  `add_broll` („bei Satz 5 ein Laptop“), `set_broll_coverage` („weniger Zwischenbilder“, 0 = keine).
+  Ohne neuen Schnitt; mehr Anteil nutzt die übrigen Vorschläge der Planung.
 - B-Roll ist an Wort-IDs verankert: Schneidet eine Korrektur die Wörter weg, verschwindet die
   B-Roll automatisch. Gerendert als Vollbild ohne Ton mit kurzer Überblendung, Untertitel darüber.
-- Die Vorschau listet die B-Roll mit Quelle: `[B1] Satz 4 · Serverraum (Pixabay)`.
+- Die Vorschau listet genau die B-Roll, die im Video ist, mit Quelle:
+  `[B1] Satz 4 · Serverraum (Pixabay)`, `(Textkarte)` oder `(eigener Clip)`.
 - Pixabay-Vorgaben werden eingehalten: Suchergebnisse 24 h gecacht (`data/cache/pixabay/`),
   Dateien einmalig geladen, wenige Treffer pro Stelle, Quell-URL gespeichert.
 - **Offen vor dem Echtbetrieb:** Pixabay-Lizenz („Content License“) und API-Bedingungen für die

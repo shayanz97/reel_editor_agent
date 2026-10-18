@@ -14,7 +14,7 @@ from sqlalchemy import Engine
 
 from reels.bot import service, texts
 from reels.bot.common import FILE_TIMEOUT_S, db, notify_admin
-from reels.bot.files import looks_like_video, to_host_path
+from reels.bot.files import has_broll_tag, looks_like_image, looks_like_video, to_host_path
 from reels.bot.handlers import glossary
 from reels.bot.keyboards import (
     APPLY,
@@ -85,6 +85,14 @@ async def on_document(
 ) -> None:
     doc = message.document
     assert doc is not None
+    if has_broll_tag(message.caption):
+        if looks_like_video(doc.file_name, doc.mime_type):
+            await receive_broll(message, bot, access, engine, app, doc.file_id, "video")
+        elif looks_like_image(doc.file_name, doc.mime_type):
+            await receive_broll(message, bot, access, engine, app, doc.file_id, "image")
+        else:
+            await message.answer(texts.BROLL_NOT_MEDIA)
+        return
     if not looks_like_video(doc.file_name, doc.mime_type):
         await message.answer(texts.NOT_A_VIDEO)
         return
@@ -96,8 +104,64 @@ async def on_compressed_video(
 ) -> None:
     video = message.video
     assert video is not None
+    if has_broll_tag(message.caption):
+        await receive_broll(message, bot, access, engine, app, video.file_id, "video")
+        return
     await message.answer(texts.COMPRESSED_HINT)
     await receive_video(message, bot, access, engine, app, video.file_id, video.file_name)
+
+
+async def on_photo(
+    message: Message, bot: Bot, access: Access, engine: Engine, app: Settings
+) -> None:
+    if not has_broll_tag(message.caption) or not message.photo:
+        await message.answer(texts.BROLL_PHOTO_HINT)
+        return
+    largest = max(message.photo, key=lambda p: p.width * p.height)
+    await receive_broll(message, bot, access, engine, app, largest.file_id, "image")
+
+
+async def receive_broll(
+    message: Message,
+    bot: Bot,
+    access: Access,
+    engine: Engine,
+    app: Settings,
+    file_id: str,
+    media_type: str,
+) -> None:
+    """6.11: a #broll upload goes into the client's library (indexed by the worker)."""
+    chat_id, message_id = message.chat.id, message.message_id
+    try:
+        file = await bot.get_file(file_id, request_timeout=FILE_TIMEOUT_S)
+        if not file.file_path:
+            raise ValueError("Bot API returned no file path")
+        source = to_host_path(
+            file.file_path, app.telegram_files_container_path, app.telegram_files_host_path
+        )
+        asset_id = await db(
+            engine,
+            lambda s: service.register_broll(
+                s, access, source, media_type, app, chat_id=chat_id, message_id=message_id
+            ),
+        )
+    except Exception as exc:
+        log.exception("broll_receive_failed", extra={"message_id": message_id})
+        await message.answer(texts.DOWNLOAD_FAILED)
+        await notify_admin(
+            bot,
+            app,
+            texts.ADMIN_DOWNLOAD_FAILED.format(
+                client=access.client_name, message_id=message_id, cause=str(exc)[:300]
+            ),
+        )
+        return
+    if asset_id is None:
+        return  # duplicate update
+    await message.answer(texts.BROLL_SAVED)
+    log.info("broll_uploaded", extra={"asset_id": asset_id})
+    with suppress(OSError):
+        Path(source).unlink()
 
 
 async def on_other(message: Message) -> None:
@@ -411,6 +475,7 @@ def build_router() -> Router:
     glossary.register(router)
     router.message.register(on_document, F.document)
     router.message.register(on_compressed_video, F.video)
+    router.message.register(on_photo, F.photo)
     router.message.register(on_text, F.text)
     router.message.register(on_other)
     router.callback_query.register(on_button)

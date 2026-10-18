@@ -189,3 +189,51 @@ def test_keep_pause_in_cut_plan() -> None:
     assert len(build_cut_plan(ws, [], 3.0, p).keep) == 2
     kept = build_cut_plan(ws, [], 3.0, p, keep_pauses_after={0})
     assert len(kept.keep) == 1 and kept.output_duration == pytest.approx(3.0)
+
+
+# --- B-roll operations (6.10) -------------------------------------------------------------
+
+from reels.domain.corrections import AddBroll, RemoveBroll, ReplaceBroll, SetBrollCoverage  # noqa: E402
+
+
+def _resolve_broll(*ops, numbers=(1, 2)):  # type: ignore[no-untyped-def]
+    state = VersionState()
+    return resolve(list(ops), WS, _segments(state), [], state, list(numbers))
+
+
+def test_broll_ops_validated_against_preview_numbers() -> None:
+    resolved, issues = _resolve_broll(
+        RemoveBroll(op="remove_broll", broll=2),
+        RemoveBroll(op="remove_broll", broll=7),
+        ReplaceBroll(op="replace_broll", broll=1, idea="Büro", query="office", card_text=None),
+        ReplaceBroll(op="replace_broll", broll=1, idea="leer", query=" ", card_text=None),
+    )
+    assert [type(r.op).__name__ for r in resolved] == ["RemoveBroll", "ReplaceBroll"]
+    assert [(i.kind, i.segment) for i in issues] == [("broll_missing", 7), ("nothing_to_do", None)]
+
+
+def test_add_broll_anchors_to_words_or_segment() -> None:
+    resolved, issues = _resolve_broll(
+        AddBroll(op="add_broll", segment=2, find="Kubanetis", idea="Container", query="containers",
+                 card_text=None),
+        AddBroll(op="add_broll", segment=1, find=None, idea="Karte", query="", card_text="Hallo"),
+        AddBroll(op="add_broll", segment=2, find="Docker", idea="x", query="x", card_text=None),
+    )  # fmt: skip
+    assert [r.word_ids for r in resolved] == [[6], [0, 1]]
+    assert [i.kind for i in issues] == ["find_missing"]
+
+
+def test_coverage_validated_and_applied() -> None:
+    resolved, issues = _resolve_broll(
+        SetBrollCoverage(op="set_broll_coverage", coverage=0.1),
+        SetBrollCoverage(op="set_broll_coverage", coverage=1.5),
+    )
+    assert [i.kind for i in issues] == ["coverage_invalid"]
+    new = apply(resolved, WS, VersionState())
+    assert new.broll_coverage == 0.1 and new.edits()["broll_coverage"] == 0.1
+    assert VersionState.from_version({}, [], new.edits()).broll_coverage == 0.1
+
+
+def test_broll_ops_rerun_from_segments_without_recut() -> None:
+    ops = [RemoveBroll(op="remove_broll", broll=1)]
+    assert rerun_step(ops, STEP_ORDER) == "segments"

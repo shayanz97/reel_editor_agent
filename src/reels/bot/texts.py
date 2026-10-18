@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from reels.domain.corrections import (
+    AddBroll,
     AnyOperation,
     DeleteSegment,
     DeleteWords,
@@ -13,8 +14,11 @@ from reels.domain.corrections import (
     KeepPause,
     MoveSubtitles,
     Note,
+    RemoveBroll,
+    ReplaceBroll,
     ReplaceText,
     RestoreSegment,
+    SetBrollCoverage,
     SplitSegment,
     Unhighlight,
 )
@@ -38,6 +42,14 @@ COMPRESSED_HINT = (
     "Tipp: Schick Videos als Datei (Büroklammer → Datei), dann komprimiert Telegram sie nicht. "
     "Dieses Video verarbeite ich trotzdem."
 )
+BROLL_SAVED = (
+    "📥 In deiner B-Roll-Bibliothek gespeichert. Ich beschreibe es kurz und setze es ein, "
+    "wenn es zu einem deiner Videos passt."
+)
+BROLL_PHOTO_HINT = (
+    "Fotos speichere ich als B-Roll für deine Videos. Schick sie mit #broll in der Beschreibung."
+)
+BROLL_NOT_MEDIA = "Für die B-Roll-Bibliothek brauche ich ein Video oder ein Foto."
 DOWNLOADING = "⏳ Video wird geladen …"
 DOWNLOAD_FAILED = "❌ Das Video konnte nicht geladen werden. Bitte schick es nochmal."
 RECEIVED = "✅ Video empfangen. Ich melde mich, sobald die Vorschau fertig ist."
@@ -159,6 +171,21 @@ def describe_operation(op: AnyOperation) -> str:
             return f"Satz {op.segment} nach „{op.after}“ teilen"
         case Note():
             return f"Hinweis ans Team: {op.text}"
+        case RemoveBroll():
+            return f"Zwischenbild B{op.broll} entfernen"
+        case ReplaceBroll():
+            what = f"Textkarte „{op.card_text}“" if op.card_text else op.idea
+            return f"Zwischenbild B{op.broll} ersetzen: {what}"
+        case AddBroll():
+            what = f"Textkarte „{op.card_text}“" if op.card_text else op.idea
+            where = f"bei „{op.find}“" if op.find else ""
+            return (
+                f"Satz {op.segment}{' ' + where if where else ''}: Zwischenbild einfügen ({what})"
+            )
+        case SetBrollCoverage():
+            if op.coverage <= 0:
+                return "Keine Zwischenbilder"
+            return f"Zwischenbilder: höchstens {round(op.coverage * 100)} % des Videos"
 
 
 def correction_summary(operations: Sequence[AnyOperation], version_number: int) -> str:
@@ -185,6 +212,10 @@ def describe_issue(issue: Issue) -> str:
             return f"Satz {issue.segment} endet schon nach „{issue.find}“."
         case "nothing_to_do":
             return "Ich habe keine konkrete Änderung erkannt."
+        case "broll_missing":
+            return f"Ein Zwischenbild B{issue.segment} gibt es in dieser Version nicht."
+        case "coverage_invalid":
+            return "Der Anteil an Zwischenbildern muss zwischen 0 und 100 % liegen."
 
 
 def correction_question(
