@@ -24,6 +24,9 @@ from reels.db import queue
 from reels.db.clients import ClientError, create_client, get_client
 from reels.db.glossary import add_term
 from reels.db.models import (
+    BrollAsset,
+    BrollPlacement,
+    BrollSource,
     Client,
     ClientUser,
     Correction,
@@ -31,6 +34,7 @@ from reels.db.models import (
     GlossaryStatus,
     Job,
     JobStatus,
+    PlacementStatus,
     Project,
     ProjectStatus,
     PublishPackage,
@@ -160,6 +164,7 @@ class PreviewNotice:
     segments: list[Segment]
     duration_s: float | None
     removed: list[str] = field(default_factory=list)  # texts of segments removed by corrections
+    broll: list[str] = field(default_factory=list)  # "[B1] Satz 4 · Serverraum (Pixabay)"
 
 
 @dataclass(frozen=True)
@@ -315,6 +320,7 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
                 segments,
                 duration,
                 removed,
+                _broll_lines(session, v.id, segments),
             )
         )
 
@@ -454,6 +460,42 @@ def pending_notices(session: Session, app: Settings) -> list[Notice]:
             )
         )
     return notices
+
+
+_SOURCE_LABEL = {
+    BrollSource.PIXABAY: "Pixabay",
+    BrollSource.TEXTCARD: "Textkarte",
+    BrollSource.LIBRARY: "eigener Clip",
+}
+MAX_IDEA_CHARS = 40
+
+
+def _broll_lines(session: Session, version_id: int, segments: Sequence[Segment]) -> list[str]:
+    """Ready B-roll of a version, with the sentence it belongs to and where it comes from."""
+    rows = session.execute(
+        select(BrollPlacement, BrollAsset)
+        .join(BrollAsset, BrollAsset.id == BrollPlacement.asset_id)
+        .where(
+            BrollPlacement.version_id == version_id,
+            BrollPlacement.status == PlacementStatus.READY,
+        )
+        .order_by(BrollPlacement.number)
+    ).all()
+    lines = []
+    for placement, asset in rows:
+        segment = next(
+            (s for s in segments if s.first_word <= placement.first_word <= s.last_word), None
+        )
+        if segment is None:
+            continue  # its words were cut: not in the video
+        idea = placement.card_text if asset.source is BrollSource.TEXTCARD else placement.idea
+        idea = (idea or "").strip().rstrip(".")
+        if len(idea) > MAX_IDEA_CHARS:
+            idea = idea[: MAX_IDEA_CHARS - 1].rstrip() + "…"
+        lines.append(
+            f"[B{placement.number}] Satz {segment.number} · {idea} ({_SOURCE_LABEL[asset.source]})"
+        )
+    return lines
 
 
 def mark_notice_sent(

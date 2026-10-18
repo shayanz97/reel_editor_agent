@@ -114,7 +114,15 @@ def test_example_text_fix_and_delete_creates_version_2(
     assert _jobs(engine, 2) == ["cutplan"]
     _run()
     # Transcription never runs again; segment deletion re-cuts.
-    assert _jobs(engine, 2) == ["cutplan", "segments", "highlights", "subtitles", "render"]
+    assert _jobs(engine, 2) == [
+        "cutplan",
+        "segments",
+        "highlights",
+        "broll_plan",
+        "broll_fetch",
+        "subtitles",
+        "render",
+    ]
 
     with Session(engine) as s:
         v1, v2 = s.scalars(select(Version).order_by(Version.number)).all()
@@ -157,7 +165,14 @@ def test_text_fix_does_not_recut(
     _go(_tick(bot, engine))
     _click(bot, access, engine, bot.messages[-1].reply_markup.inline_keyboard[0][0].callback_data)
     _run()
-    assert _jobs(engine, 2) == ["segments", "highlights", "subtitles", "render"]
+    assert _jobs(engine, 2) == [
+        "segments",
+        "highlights",
+        "broll_plan",
+        "broll_fetch",
+        "subtitles",
+        "render",
+    ]
     with Session(engine) as s:
         v2 = s.scalars(select(Version).where(Version.number == 2)).one()
         assert v2.subtitle_style is not None and v2.subtitle_style["position"] == "upper_third"

@@ -17,6 +17,24 @@ _UNSAFE_PATH_CHARS = set("'\\:,;[]")
 
 
 @dataclass(frozen=True)
+class Overlay:
+    """Full-frame B-roll over the speaker, on the OUTPUT timeline. Its sound is not used."""
+
+    path: Path
+    start: float
+    end: float
+    still: bool = False  # an image (looped) instead of a video
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+# Short cross-fade in and out of every B-roll.
+OVERLAY_FADE_S = 0.25
+
+
+@dataclass(frozen=True)
 class RenderOptions:
     width: int = 1080
     height: int = 1920
@@ -63,8 +81,12 @@ def build_filter_graph(
     opts: RenderOptions,
     ass_path: Path | None = None,
     fonts_dir: Path | None = None,
+    overlays: Sequence[Overlay] = (),
 ) -> str:
-    """filter_complex for trim/atrim per keep range + concat, outputs [vout] and [aout]."""
+    """filter_complex for trim/atrim per keep range + concat, B-roll overlays, subtitles.
+
+    Inputs: 0 = original, 1.. = overlays (in order). Outputs [vout] and [aout].
+    """
     if not keep:
         raise ValueError("cut plan keeps nothing")
     n = len(keep)
@@ -91,12 +113,31 @@ def build_filter_graph(
         chains.append(a + f"[a{i}]")
     chains.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vc][ac]")
 
-    video = f"[vc]fps={output_frame_rate(src, opts.max_fps)}"
+    rate = output_frame_rate(src, opts.max_fps)
+    chains.append(f"[vc]fps={rate}[base]")
+    current = "base"
+    for j, o in enumerate(overlays):
+        f = min(OVERLAY_FADE_S, o.duration / 2)
+        chains.append(
+            f"[{j + 1}:v]trim=duration={o.duration:.3f},setpts=PTS-STARTPTS,"
+            f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,"
+            f"fps={rate},format=yuva420p,"
+            f"fade=t=in:st=0:d={f:.3f}:alpha=1,"
+            f"fade=t=out:st={o.duration - f:.3f}:d={f:.3f}:alpha=1,"
+            f"setpts=PTS+{o.start:.3f}/TB[o{j}]"
+        )
+        chains.append(
+            f"[{current}][o{j}]overlay=eof_action=pass:"
+            f"enable='between(t,{o.start:.3f},{o.end:.3f})'[b{j}]"
+        )
+        current = f"b{j}"
     if ass_path is not None:
-        # Subtitles last, so they sit on top of everything (later also on top of B-roll).
-        video += f",subtitles=filename={filter_path(ass_path)}"
+        # Subtitles last, so they sit on top of everything, also on top of B-roll.
+        video = f"[{current}]subtitles=filename={filter_path(ass_path)}"
         if fonts_dir is not None:
             video += f":fontsdir={filter_path(fonts_dir)}"
+    else:
+        video = f"[{current}]null"
     chains.append(video + "[vout]")
     chains.append(f"[ac]loudnorm=I={opts.loudness_lufs:g}:TP=-1.5:LRA=11,aresample=48000[aout]")
     return ";".join(chains)
@@ -111,14 +152,21 @@ def render(
     ass_path: Path | None = None,
     fonts_dir: Path | None = None,
     timeout: float | None = None,
+    overlays: Sequence[Overlay] = (),
 ) -> Path:
     """Render to 1080x1920 H.264 (yuv420p) + AAC 48 kHz. Writes atomically."""
-    graph = build_filter_graph(keep, src, opts, ass_path, fonts_dir)
+    graph = build_filter_graph(keep, src, opts, ass_path, fonts_dir, overlays)
+    overlay_inputs: list[str] = []
+    for o in overlays:
+        if o.still:
+            overlay_inputs += ["-loop", "1", "-t", f"{o.duration:.3f}"]
+        overlay_inputs += ["-i", str(o.path)]
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.stem + ".tmp" + dst.suffix)
     cmd = [
         ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(src_path),
+        *overlay_inputs,
         "-filter_complex", graph,
         "-map", "[vout]", "-map", "[aout]",
         "-c:v", "libx264", "-preset", opts.preset, "-crf", str(opts.crf),

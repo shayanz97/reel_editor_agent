@@ -7,6 +7,9 @@ REELS_TEST_NOTIFY   file that gets one line per admin notification
 REELS_TEST_LLM      1 -> fake LLM (highlights: first word of each sentence)
 REELS_TEST_CORRECTION  JSON answer of the fake LLM for corrections
 REELS_TEST_VOCAB    JSON answer of the fake LLM for the vocabulary check (default: nothing)
+REELS_TEST_BROLL    JSON list of B-roll suggestions of the fake LLM (default: none)
+REELS_TEST_BROLL_SCORE  score of the fake vision check (default 8)
+REELS_TEST_STOCK    directory with stock.mp4 + stock.jpg -> Pixabay client on a mocked transport
 REELS_TEST_PROMPTS  file that gets every prompt the fake LLM receives
 """
 
@@ -18,9 +21,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
+
+from reels.broll.pixabay import PixabayClient
 from reels.domain.words import Transcript
 from reels.llm.base import LLMUsage
 from reels.llm.schemas import (
+    AssetCheck,
+    BrollPlanResponse,
+    BrollSuggestion,
     CorrectionResponse,
     CoverChoice,
     CoverPlanResponse,
@@ -100,6 +109,11 @@ class FakeLLM:
             )
         if task == "post_revise":
             return PostDraft(hook="Kürzer.", body="Drei Wege.", cta="Dein Weg?", hashtags=["#Geld"])
+        if task == "broll_plan":
+            items = json.loads(os.environ.get("REELS_TEST_BROLL", "[]"))
+            return BrollPlanResponse(suggestions=[BrollSuggestion(**i) for i in items])
+        if task == "broll_check":
+            return AssetCheck(score=int(os.environ.get("REELS_TEST_BROLL_SCORE", "8")), reason="t")
         if task == "vocab":
             return VocabResponse.model_validate_json(
                 os.environ.get("REELS_TEST_VOCAB", '{"items": []}')
@@ -124,6 +138,32 @@ class FakeLLM:
         return [[0.0] for _ in texts]
 
 
+def fake_stock() -> PixabayClient | None:
+    """Real Pixabay client, but its HTTP goes to a mocked transport serving local files."""
+    folder = os.environ.get("REELS_TEST_STOCK")
+    if not folder:
+        return None
+    files = Path(folder)
+    hits = {"total": 1, "totalHits": 1, "hits": [{
+        "id": 4711, "pageURL": "https://pixabay.com/videos/server-4711/", "tags": "server room",
+        "duration": 10, "videos": {"medium": {
+            "url": "https://cdn.test/4711.mp4", "width": 1080, "height": 1920, "size": 1,
+            "thumbnail": "https://cdn.test/4711.jpg"}},
+    }]}  # fmt: skip
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".mp4"):
+            return httpx.Response(200, content=(files / "stock.mp4").read_bytes())
+        if request.url.path.endswith(".jpg"):
+            return httpx.Response(200, content=(files / "stock.jpg").read_bytes())
+        return httpx.Response(200, json=hits)
+
+    from reels.config import get_settings
+
+    cache = get_settings().data_dir / "cache" / "pixabay"
+    return PixabayClient("TEST", cache, http=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
 def make_providers() -> Providers:
     spec = load_spec(os.environ["REELS_TEST_SPEC"])
     engine = ControlledEngine(
@@ -136,4 +176,5 @@ def make_providers() -> Providers:
         vad=lambda: vad,
         llm=lambda: llm,
         notifier=FileNotifier(os.environ.get("REELS_TEST_NOTIFY")),
+        stock=fake_stock,
     )

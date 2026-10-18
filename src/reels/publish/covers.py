@@ -40,6 +40,40 @@ def render_html(
     )
 
 
+def screenshot_pages(pages: Sequence[tuple[str, Path]], workdir: Path) -> list[Path]:
+    """Render HTML documents (content, PNG target) with one headless Chromium (1080 x 1920).
+
+    Each page is written next to its PNG so relative/file URLs resolve, then removed.
+    A page may set `document.body.dataset.ready = "1"` when it is done (fonts, fitting).
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    results: list[Path] = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(
+                viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1
+            )
+            for content, png in pages:
+                page_file = png.with_suffix(".html")
+                page_file.write_text(content, encoding="utf-8")
+                page.goto(page_file.resolve().as_uri(), wait_until="load")
+                # Templates without the ready flag are rendered as they are after the timeout.
+                with suppress(PlaywrightTimeout):
+                    page.wait_for_function(
+                        "document.body.dataset.ready === '1'", timeout=READY_TIMEOUT_MS
+                    )
+                page.screenshot(path=str(png), full_page=False)
+                page_file.unlink()
+                results.append(png)
+        finally:
+            browser.close()
+    return results
+
+
 def render_covers(
     specs: Sequence[CoverSpec],
     template: Path,
@@ -49,35 +83,13 @@ def render_covers(
     accent_color: str,
 ) -> list[Path]:
     """Render one PNG per spec (`cover_<n>.png`) with a single headless Chromium."""
-    from playwright.sync_api import TimeoutError as PlaywrightTimeout
-    from playwright.sync_api import sync_playwright
-
-    out_dir.mkdir(parents=True, exist_ok=True)
     source = template.read_text(encoding="utf-8")
     font = fonts_dir / COVER_FONT
-    results: list[Path] = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        try:
-            page = browser.new_page(
-                viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1
-            )
-            for spec in specs:
-                page_file = out_dir / f"cover_{spec.number}.html"
-                page_file.write_text(
-                    render_html(source, spec.frame, spec.headline, font, text_color, accent_color),
-                    encoding="utf-8",
-                )
-                page.goto(page_file.resolve().as_uri(), wait_until="load")
-                # Templates without the ready flag are rendered as they are after the timeout.
-                with suppress(PlaywrightTimeout):
-                    page.wait_for_function(
-                        "document.body.dataset.ready === '1'", timeout=READY_TIMEOUT_MS
-                    )
-                png = out_dir / f"cover_{spec.number}.png"
-                page.screenshot(path=str(png), full_page=False)
-                page_file.unlink()
-                results.append(png)
-        finally:
-            browser.close()
-    return results
+    pages = [
+        (
+            render_html(source, spec.frame, spec.headline, font, text_color, accent_color),
+            out_dir / f"cover_{spec.number}.png",
+        )
+        for spec in specs
+    ]
+    return screenshot_pages(pages, out_dir)

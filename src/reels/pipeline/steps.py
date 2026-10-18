@@ -34,7 +34,7 @@ from reels.log import get_logger
 from reels.media.ass import style_from_settings, write_ass
 from reels.media.audio import extract_audio
 from reels.media.probe import ProbeResult, check_processable, probe
-from reels.media.render import RenderOptions, render
+from reels.media.render import Overlay, RenderOptions, render
 from reels.settings_schema import ClientSettings
 from reels.transcribe.base import TranscriptionEngine
 from reels.vad.silero import VoiceActivityDetector
@@ -284,8 +284,9 @@ def render_step(
     out: Path,
     fonts_dir: Path,
     preset: str | None = None,
+    overlays: Sequence[Overlay] = (),
 ) -> Path:
     opts = RenderOptions.from_settings(settings)
     if preset:
         opts = RenderOptions(**{**opts.__dict__, "preset": preset})
-    return render(original, out, plan.keep, src, opts, ass, fonts_dir)
+    return render(original, out, plan.keep, src, opts, ass, fonts_dir, overlays=overlays)

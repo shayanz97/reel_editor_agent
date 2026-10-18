@@ -105,7 +105,7 @@ Schrift: Montserrat (OFL), siehe [assets/fonts/README.md](assets/fonts/README.md
 ## Queue und Worker
 
 Jeder Pipeline-Schritt ist ein Job in Postgres (Tabelle `jobs`):
-`probe → audio → transcribe → glossary → vocab → vad → cutplan → segments → highlights → subtitles → render`.
+`probe → audio → transcribe → glossary → vocab → vad → cutplan → segments → highlights → broll_plan → broll_fetch → subtitles → render`.
 `reels process` führt dieselben Jobs direkt aus; im Betrieb übernimmt sie der Worker.
 
 ```bash
@@ -186,6 +186,31 @@ uv run python -m reels.worker                  # Worker (Terminal 2)
 - Alle Kundentexte stehen in `src/reels/bot/texts.py`.
 - Der Bot rechnet nichts selbst: Er legt Projekte und Jobs an und meldet zurück, was der Worker
   erledigt hat (Abfrage der Datenbank alle 2 s).
+
+## B-Roll (Zwischenbilder)
+
+Standardmäßig aus. Pro Kunde einschalten und bei Bedarf anpassen:
+
+```bash
+uv run reels client set demo broll.enabled=true
+uv run reels client set demo broll.max_coverage=0.2 broll.min_gap_s=4
+```
+
+- `broll_plan`: Das LLM schlägt Stellen vor (Wortbereich, Bildidee, englische Suchanfrage,
+  `stock` oder `textcard`, Priorität). Der Code wendet die Regeln an: nicht vor `min_start_s`,
+  `min_duration_s`–`max_duration_s` pro Stelle, insgesamt höchstens `max_coverage` des Videos,
+  `min_gap_s` Abstand. Die Startwerte sind im Qualitätstest zu prüfen.
+- `broll_fetch`: Textkarten werden aus `assets/templates/textcard/default/card.html` gerendert.
+  Stock-Clips kommen von **Pixabay** (`PIXABAY_API_KEY`): Hochformat bevorzugt, Vorschaubild per
+  Vision-Modell gegen die Bildidee geprüft (`broll.min_score`, 0–10). Passt nichts, wird die
+  Stelle **übersprungen** statt etwas Unpassendes einzusetzen. Ohne Schlüssel: nur Textkarten.
+- B-Roll ist an Wort-IDs verankert: Schneidet eine Korrektur die Wörter weg, verschwindet die
+  B-Roll automatisch. Gerendert als Vollbild ohne Ton mit kurzer Überblendung, Untertitel darüber.
+- Die Vorschau listet die B-Roll mit Quelle: `[B1] Satz 4 · Serverraum (Pixabay)`.
+- Pixabay-Vorgaben werden eingehalten: Suchergebnisse 24 h gecacht (`data/cache/pixabay/`),
+  Dateien einmalig geladen, wenige Treffer pro Stelle, Quell-URL gespeichert.
+- **Offen vor dem Echtbetrieb:** Pixabay-Lizenz („Content License“) und API-Bedingungen für die
+  kommerzielle Nutzung in Kundenvideos prüfen und hier vermerken. (Noch nicht geprüft.)
 
 ## Entwicklung
 

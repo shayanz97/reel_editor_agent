@@ -4,7 +4,7 @@ Regeln: Immer nur die aktuelle Etappe bearbeiten. Aufgaben in Reihenfolge abarbe
 Eine Etappe gilt erst als fertig, wenn alle Abnahmekriterien erfüllt sind.
 Architektur, Konventionen und Schemas stehen in `CLAUDE.md`.
 
-Status: **Etappe 5** – Code fertig und mit Fakes getestet; Prüfung mit echtem LLM und Telegram steht aus.
+Status: **Etappe 6** – Teil 1 (Pixabay, Textkarten, Regeln, Rendern) fertig; Teil 2 (Bibliothek, Korrekturen: 6.4, 6.10, 6.11) offen.
 
 Offene Punkte früherer Etappen:
 - Etappe 1: Qualitätstest mit 10 Kundenvideos steht aus. Auf Wunsch des Auftraggebers (2026-10-16)
@@ -160,17 +160,17 @@ Offene Punkte früherer Etappen:
 
 ## Etappe 6 – B-roll
 
-**Ziel:** Passende B-roll aus Pexels oder als Textkarte, an Wort-IDs verankert, per Korrektur steuerbar.
+**Ziel:** Passende B-roll aus Pixabay oder als Textkarte, an Wort-IDs verankert, per Korrektur steuerbar.
 
-- [ ] 6.1 Migration: `broll_assets` (mit pgvector-Embedding), `broll_placements`
-- [ ] 6.2 `domain/broll_rules.py`: keine B-roll in den ersten 2–3 s, 1,5–4 s pro Stelle, Gesamtanteil ≤ `broll.max_coverage`, Mindestabstand
-- [ ] 6.3 `broll/planner.py`: LLM schlägt Stellen vor (Wortbereich, Bildidee, englische Suchanfrage, Typ, Priorität), Code wendet die Regeln an
+- [x] 6.1 Migration: `broll_assets` (mit pgvector-Embedding), `broll_placements`
+- [x] 6.2 `domain/broll_rules.py`: keine B-roll in den ersten 2–3 s, 1,5–4 s pro Stelle, Gesamtanteil ≤ `broll.max_coverage`, Mindestabstand
+- [x] 6.3 `broll/planner.py`: LLM schlägt Stellen vor (Wortbereich, Bildidee, englische Suchanfrage, Typ, Priorität), Code wendet die Regeln an
 - [ ] 6.4 `broll/library.py`: Kundenbibliothek, Indexierung (Frames → Beschreibung per Bildeingabe → Embedding), Ähnlichkeitssuche
-- [ ] 6.5 `broll/pexels.py`: Suche (Hochformat bevorzugt, Mindestlänge), Download in den Cache, Quell-URL speichern
-- [ ] 6.6 `broll/textcards.py`: Textkarten aus HTML-Vorlage per Playwright, als kurzes Video
-- [ ] 6.7 Prüfung: Vorschaubild gegen Bildidee bewerten, unter Schwellwert verwerfen
-- [ ] 6.8 Rendering: Vollbild-Overlay ohne Ton, kurze Überblendung, Untertitel darüber
-- [ ] 6.9 Vorschau zeigt B-roll-Liste (`[B1] Satz 4 · Serverraum (Pexels)`)
+- [x] 6.5 `broll/pixabay.py` (statt Pexels, Entscheidung 2026-10-18): Suche (Hochformat bevorzugt, Mindestlänge), Suchergebnisse 24 h cachen (Pixabay-Vorgabe), Download in den Cache, Quell-URL speichern
+- [x] 6.6 `broll/textcards.py`: Textkarten aus HTML-Vorlage per Playwright, als kurzes Video
+- [x] 6.7 Prüfung: Vorschaubild gegen Bildidee bewerten, unter Schwellwert verwerfen
+- [x] 6.8 Rendering: Vollbild-Overlay ohne Ton, kurze Überblendung, Untertitel darüber
+- [x] 6.9 Vorschau zeigt B-roll-Liste (`[B1] Satz 4 · Serverraum (Pixabay)`)
 - [ ] 6.10 Korrektur-Operationen `remove_broll`, `replace_broll`, `add_broll`, `set_broll_coverage`
 - [ ] 6.11 `#broll`: Kunde schickt Clips/Fotos, sie landen indexiert in seiner Bibliothek
 
@@ -178,8 +178,8 @@ Offene Punkte früherer Etappen:
 - B-roll-Regeln sind unit-getestet
 - Ein gelöschtes Segment entfernt die zugehörige B-roll automatisch
 - Ohne passenden Treffer wird die Stelle übersprungen, statt Unpassendes einzusetzen
-- Eigene Clips aus der Bibliothek werden vor Pexels bevorzugt
-- Pexels-Lizenzbedingungen sind vor dem Echtbetrieb geprüft und im README vermerkt
+- Eigene Clips aus der Bibliothek werden vor Pixabay bevorzugt
+- Pixabay-Lizenz- und API-Bedingungen sind vor dem Echtbetrieb geprüft und im README vermerkt
 
 ---
 

@@ -9,7 +9,7 @@ Ein Kunde schickt ein kurzes Video (bis 3 Minuten, Hochformat, Deutsch) per Tele
 Das System schneidet Pausen heraus, erzeugt Untertitel, schickt eine Vorschau zurück,
 nimmt Korrekturen als Freitext an und rendert neue Versionen bis zur Freigabe.
 Danach entsteht ein Veröffentlichungspaket für Instagram (3 Cover, Beitragstext, Hashtags).
-Später kommt B-roll dazu (Pexels und Textkarten).
+Später kommt B-roll dazu (Pixabay und Textkarten).
 
 Das System ist **mandantenfähig**: mehrere Kunden, jeder mit eigenen Einstellungen,
 eigenem Fachwörterbuch und eigenen Dateien.
@@ -27,9 +27,10 @@ eigenem Fachwörterbuch und eigenen Dateien.
 - LLM: **OpenAI** über eine eigene Anbieter-Schicht (`reels/llm/`), immer mit Structured Outputs
   und Pydantic-Schemas. Modellnamen kommen aus der Konfiguration, nie hart im Code.
 - Cover und Textkarten: HTML/CSS-Vorlagen, gerendert mit **Playwright** (Chromium).
-- B-roll-Stock: **Pexels API** (erst ab Etappe 6).
+- B-roll-Stock: **Pixabay API** (ab Etappe 6; ersetzt Pexels, Entscheidung des Auftraggebers vom
+  2026-10-18, da für Pexels kein API-Schlüssel verfügbar war).
 - Weitere erlaubte Bibliotheken: **pydantic** und **pydantic-settings** (Schemas, Konfiguration),
-  **Typer** (CLI), **httpx** (HTTP, z. B. Pexels), **opencv-python-headless** (Frames, Schärfe, Gesichter),
+  **Typer** (CLI), **httpx** (HTTP, z. B. Pixabay), **opencv-python-headless** (Frames, Schärfe, Gesichter),
   **psycopg** (Postgres-Treiber), **pgvector** (SQLAlchemy-Typ).
 - Entwicklungsrechner: **Mac mit Apple Silicon**. Docker Compose startet nur Postgres und den
   Bot API Server. Bot und Worker laufen direkt mit `uv` auf dem Host (Docker kann die Mac-GPU nicht nutzen).
@@ -46,7 +47,7 @@ Bot-Prozess (aiogram)  ──► Postgres: Projekte, Versionen, Jobs anlegen
 Worker-Prozess(e) ─────────────────┘  holt Jobs, schreibt Status/Ergebnisse
    ├─ Datenordner (Originale, Versionen, Exporte, Caches)
    ├─ Transkription, VAD, Schnittplan, ASS, FFmpeg-Rendering
-   └─ OpenAI (Text, Bildprüfung, Embeddings), Pexels (B-roll)
+   └─ OpenAI (Text, Bildprüfung, Embeddings), Pixabay (B-roll)
 ```
 
 - Bot und Worker sind **getrennte Prozesse**. Der Bot rechnet nie selbst, er legt Jobs an
@@ -79,7 +80,7 @@ Worker-Prozess(e) ─────────────────┘  holt J
 │   ├── transcribe/             # base.py, whisperx_engine.py, mlx_engine.py
 │   ├── vad/                    # silero.py
 │   ├── llm/                    # base.py, openai_provider.py, schemas.py, prompts/*.md
-│   ├── broll/                  # planner.py, library.py, pexels.py, textcards.py
+│   ├── broll/                  # planner.py, library.py, pixabay.py, textcards.py
 │   ├── publish/                # covers.py, post_text.py, hashtags.py
 │   ├── pipeline/               # steps.py (ein Schritt = eine Funktion), runner.py
 │   ├── worker/                 # main.py
@@ -255,7 +256,7 @@ data/
       transcript.json
       v<n>/ cutplan.json, subtitles.ass, preview.mp4, export.mp4, covers/
     broll/library/ …
-  cache/pexels/ …
+  cache/pixabay/ …
 ```
 Ein Aufräum-Job löscht Originale und Zwischenstände `retention_days` nach Freigabe.
 
@@ -265,7 +266,7 @@ Ein Aufräum-Job löscht Originale und Zwischenstände `retention_days` nach Fre
   Segmentierung, Untertitel-Gruppen, Korrektur-Anwendung, Wörterbuch-Ersetzung, B-roll-Regeln).
 - Integrationstests mit **synthetischen Videos**, per FFmpeg erzeugt
   (z. B. `testsrc2` + Sinuston mit eingebauten Stille-Abschnitten). Keine Kundenvideos im Repo.
-- LLM, Pexels und Telegram in Tests immer mocken. **Keine Netzwerkzugriffe in Tests.**
+- LLM, Pixabay und Telegram in Tests immer mocken. **Keine Netzwerkzugriffe in Tests.**
 - Transkriptions-Engines in Tests durch einen Fake ersetzen, der feste Wörter liefert.
 - ASS-Ausgabe mit Golden Files prüfen.
 - DB-Tests gegen das Postgres aus `docker compose` (eigene Testdatenbank).

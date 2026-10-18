@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: "CardFont";
+    src: url("$font_url");
+    font-weight: 100 900;
+  }
+  html, body {
+    margin: 0;
+    width: 1080px;
+    height: 1920px;
+    overflow: hidden;
+    background: $background;
+  }
+  .card {
+    position: absolute;
+    left: 90px;
+    right: 90px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: "CardFont", sans-serif;
+    font-weight: 800;
+    font-size: 132px;
+    line-height: 1.05;
+    color: $text_color;
+    text-align: center;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+  .bar {
+    display: block;
+    width: 200px;
+    height: 16px;
+    margin: 48px auto 0;
+    background: $accent_color;
+    border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+  <div class="card" id="card">$text<span class="bar"></span></div>
+  <script>
+    document.fonts.ready.then(() => {
+      const c = document.getElementById("card");
+      let size = 132;
+      while (c.scrollHeight > 1100 && size > 56) {
+        size -= 4;
+        c.style.fontSize = size + "px";
+      }
+      document.body.dataset.ready = "1";
+    });
+  </script>
+</body>
+</html>

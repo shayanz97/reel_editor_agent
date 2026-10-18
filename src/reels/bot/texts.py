@@ -253,13 +253,16 @@ def preview_messages(
     segments: Sequence[Segment],
     removed: Sequence[str] = (),
     limit: int = TELEGRAM_TEXT_LIMIT,
+    broll: Sequence[str] = (),
 ) -> list[str]:
-    """Numbered sentences (+ removed ones as E1 …) and the question, split below the limit."""
+    """Numbered sentences (+ removed ones as E1 …, B-roll as B1 …) and the question."""
     lines = ["Sätze in dieser Version:", ""]
     lines += [f"{s.number}. {s.text}" for s in segments]
     if removed:
         lines += ["", "Entfernte Sätze:"]
         lines += [f"E{n}. {text}" for n, text in enumerate(removed, start=1)]
+    if broll:
+        lines += ["", "Zwischenbilder (B-Roll):", *broll]
     lines += ["", PREVIEW_QUESTION]
     return chunk_lines(lines, limit)
 

@@ -4,7 +4,13 @@ import pytest
 
 from reels.domain.cutplan import KeepRange
 from reels.media.probe import ProbeResult
-from reels.media.render import RenderOptions, build_filter_graph, filter_path, output_frame_rate
+from reels.media.render import (
+    Overlay,
+    RenderOptions,
+    build_filter_graph,
+    filter_path,
+    output_frame_rate,
+)
 
 
 def _src(rate: str = "30/1") -> ProbeResult:
@@ -51,9 +57,27 @@ def test_fades_skipped_for_very_short_ranges() -> None:
 
 def test_subtitles_are_last_video_filter(tmp_path: Path) -> None:
     g = build_filter_graph(KEEP, _src(), RenderOptions(), tmp_path / "s.ass", tmp_path)
-    vout = next(c for c in g.split(";") if c.endswith("[vout]"))
-    assert vout.startswith("[vc]fps=30/1,subtitles=filename='")
+    chains = g.split(";")
+    assert "[vc]fps=30/1[base]" in chains
+    vout = next(c for c in chains if c.endswith("[vout]"))
+    assert vout.startswith("[base]subtitles=filename='")
     assert f":fontsdir='{tmp_path.resolve()}'[vout]" in vout
+
+
+def test_overlays_sit_between_video_and_subtitles(tmp_path: Path) -> None:
+    overlays = [
+        Overlay(tmp_path / "a.mp4", start=1.0, end=3.0),
+        Overlay(tmp_path / "card.png", start=5.0, end=6.5, still=True),
+    ]
+    g = build_filter_graph(KEEP, _src(), RenderOptions(), tmp_path / "s.ass", None, overlays)
+    chains = g.split(";")
+    prep = next(c for c in chains if c.startswith("[1:v]"))
+    assert "trim=duration=2.000" in prep and "setpts=PTS+1.000/TB[o0]" in prep
+    assert "fade=t=in:st=0:d=0.250:alpha=1" in prep and "fade=t=out:st=1.750" in prep
+    assert "[base][o0]overlay=eof_action=pass:enable='between(t,1.000,3.000)'[b0]" in chains
+    assert "[b0][o1]overlay=eof_action=pass:enable='between(t,5.000,6.500)'[b1]" in chains
+    assert next(c for c in chains if c.endswith("[vout]")).startswith("[b1]subtitles=")
+    assert "[base]null[vout]" in build_filter_graph(KEEP, _src(), RenderOptions())
 
 
 @pytest.mark.parametrize(

@@ -56,3 +56,22 @@ class PostDraft(BaseModel):
     body: str
     cta: str
     hashtags: list[str]
+
+
+class BrollSuggestion(BaseModel):
+    first_word_id: int
+    last_word_id: int
+    idea: str
+    query: str
+    kind: Literal["stock", "textcard"]
+    card_text: str | None
+    priority: int
+
+
+class BrollPlanResponse(BaseModel):
+    suggestions: list[BrollSuggestion]
+
+
+class AssetCheck(BaseModel):
+    score: int
+    reason: str

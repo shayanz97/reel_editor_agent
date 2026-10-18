@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
@@ -82,6 +83,24 @@ class PublishStatus(StrEnum):
     READY = "ready"  # covers + text offered, waiting for the client's choice
     DONE = "done"  # final package sent
     FAILED = "failed"
+
+
+class BrollSource(StrEnum):
+    LIBRARY = "library"  # the client's own clips and photos
+    PIXABAY = "pixabay"  # stock (shared cache)
+    TEXTCARD = "textcard"  # rendered from an HTML template
+
+
+class BrollAssetStatus(StrEnum):
+    PENDING = "pending"  # not indexed yet
+    READY = "ready"
+    FAILED = "failed"
+
+
+class PlacementStatus(StrEnum):
+    PLANNED = "planned"  # no asset yet
+    READY = "ready"
+    SKIPPED = "skipped"  # nothing suitable found: left out instead of something unsuitable
 
 
 class AssetKind(StrEnum):
@@ -406,3 +425,73 @@ class PublishPackage(Base):
     failure_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
+
+
+# Vector size of OPENAI_MODEL_EMBED (text-embedding-3-small). Changing the model to one with
+# another size needs a migration; reels.broll checks OPENAI_EMBED_DIM against this.
+EMBED_DIM = 1536
+
+
+class BrollAsset(Base):
+    """A B-roll clip or image: client library, cached stock, or rendered text card."""
+
+    __tablename__ = "broll_assets"
+    __table_args__ = (
+        _status_check(BrollSource, column="source"),
+        _status_check(BrollAssetStatus),
+        UniqueConstraint("source", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Library assets belong to a client; stock and text cards are not client-bound.
+    client_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[BrollSource] = mapped_column(StrEnumType(BrollSource))
+    source_id: Mapped[str | None] = mapped_column(String(64))
+    source_url: Mapped[str | None] = mapped_column(Text)  # e.g. Pixabay page (attribution)
+    media_type: Mapped[str] = mapped_column(String(16))  # video | image
+    path: Mapped[str | None] = mapped_column(Text)  # relative to DATA_DIR
+    thumbnail: Mapped[str | None] = mapped_column(Text)
+    width: Mapped[int | None]
+    height: Mapped[int | None]
+    duration_s: Mapped[float | None]
+    description: Mapped[str | None] = mapped_column(Text)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM))
+    status: Mapped[BrollAssetStatus] = mapped_column(
+        StrEnumType(BrollAssetStatus), default=BrollAssetStatus.READY
+    )
+    meta: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=_EMPTY_JSON_OBJECT
+    )
+    created_at: Mapped[datetime] = _created_at()
+
+
+class BrollPlacement(Base):
+    """A B-roll spot in a version, anchored to word ids (never to preview times)."""
+
+    __tablename__ = "broll_placements"
+    __table_args__ = (
+        _status_check(PlacementStatus),
+        UniqueConstraint("version_id", "number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("versions.id", ondelete="CASCADE"), index=True
+    )
+    number: Mapped[int]  # B1, B2 … in the preview
+    first_word: Mapped[int]
+    last_word: Mapped[int]
+    kind: Mapped[str] = mapped_column(String(16))  # stock | textcard
+    idea: Mapped[str] = mapped_column(Text)  # what should be seen (German)
+    query: Mapped[str | None] = mapped_column(Text)  # stock search (English)
+    card_text: Mapped[str | None] = mapped_column(Text)  # text card content
+    priority: Mapped[int] = mapped_column(default=2, server_default=text("2"))
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("broll_assets.id", ondelete="SET NULL"))
+    score: Mapped[float | None]  # vision check of the chosen asset (0..10)
+    status: Mapped[PlacementStatus] = mapped_column(
+        StrEnumType(PlacementStatus), default=PlacementStatus.PLANNED
+    )
+    reason: Mapped[str | None] = mapped_column(Text)  # why skipped
+    created_at: Mapped[datetime] = _created_at()

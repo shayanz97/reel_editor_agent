@@ -34,6 +34,12 @@ class BrollSettings(BaseModel):
 
     enabled: bool = False
     max_coverage: float = Field(default=0.25, ge=0.0, le=1.0)
+    # Starting values, to be confirmed in the quality test.
+    min_start_s: float = Field(default=2.5, ge=0)  # nothing over the first seconds (hook)
+    min_duration_s: float = Field(default=1.5, gt=0)
+    max_duration_s: float = Field(default=4.0, gt=0)
+    min_gap_s: float = Field(default=3.0, ge=0)  # between two B-roll spots
+    min_score: float = Field(default=6.0, ge=0, le=10)  # vision check of a candidate (0..10)
 
 
 class PublishSettings(BaseModel):

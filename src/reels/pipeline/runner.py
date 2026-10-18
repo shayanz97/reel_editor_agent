@@ -8,6 +8,7 @@ and a restarted worker simply runs the step again (every step is idempotent).
 from __future__ import annotations
 
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,17 +17,24 @@ from typing import Any, Protocol
 from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.orm import Session
 
+from reels.broll import planner, textcards
+from reels.broll.check import check_image
+from reels.broll.pixabay import PixabayClient, StockUnavailableError
 from reels.config import Settings, get_settings
 from reels.db import queue
 from reels.db.glossary import add_hits, load_terms
 from reels.db.models import (
     Asset,
     AssetKind,
+    BrollAsset,
+    BrollPlacement,
+    BrollSource,
     Client,
     Correction,
     CorrectionStatus,
     Job,
     JobStatus,
+    PlacementStatus,
     Project,
     ProjectStatus,
     PublishPackage,
@@ -38,6 +46,8 @@ from reels.db.models import (
     Transcript as TranscriptRow,
 )
 from reels.domain import vocab
+from reels.domain.broll_rules import BrollRules, Candidate, word_span
+from reels.domain.broll_rules import select as select_slots
 from reels.domain.corrections import VersionState, removed_segments, rerun_step, resolve
 from reels.domain.cutplan import CutPlan
 from reels.domain.glossary import GlossaryTerm, apply_glossary_text, build_prompt_hint
@@ -45,11 +55,18 @@ from reels.domain.segments import Segment, Span, number_segments, split_sentence
 from reels.domain.timeline import Timeline
 from reels.domain.words import Transcript, display_text
 from reels.llm.base import LLMError, LLMProvider, load_prompt
-from reels.llm.schemas import CorrectionResponse, CoverPlanResponse, PostDraft, VocabResponse
+from reels.llm.schemas import (
+    BrollPlanResponse,
+    CorrectionResponse,
+    CoverPlanResponse,
+    PostDraft,
+    VocabResponse,
+)
 from reels.log import get_logger, log_context
 from reels.media import frames
 from reels.media.ffmpeg import FFmpegError
 from reels.media.probe import ProbeResult, VideoRejectedError
+from reels.media.render import Overlay
 from reels.pipeline import steps
 from reels.pipeline.steps import ProjectPaths
 from reels.publish import cover_plan, covers, post_text
@@ -69,6 +86,8 @@ STEP_ORDER: tuple[str, ...] = (
     "cutplan",
     "segments",
     "highlights",
+    "broll_plan",
+    "broll_fetch",
     "subtitles",
     "render",
 )
@@ -112,6 +131,7 @@ class Providers:
     vad: Callable[[], VoiceActivityDetector]
     llm: Callable[[], LLMProvider | None]
     notifier: Notifier = field(default_factory=LogNotifier)
+    stock: Callable[[], PixabayClient | None] = lambda: None
 
 
 def default_providers() -> Providers:
@@ -119,10 +139,19 @@ def default_providers() -> Providers:
     from reels.transcribe.base import get_engine
     from reels.vad.silero import SileroVad
 
+    def stock() -> PixabayClient | None:
+        app = get_settings()
+        if app.pixabay_api_key is None:
+            return None
+        return PixabayClient(
+            app.pixabay_api_key.get_secret_value(), app.data_dir / "cache" / "pixabay"
+        )
+
     return Providers(
         engine=get_engine,
         vad=SileroVad,
         llm=lambda: OpenAIProvider.from_settings(get_settings()),
+        stock=stock,
     )
 
 
@@ -648,6 +677,222 @@ def step_highlights(ctx: StepContext) -> None:
     )
 
 
+# --- B-roll --------------------------------------------------------------------------------
+
+
+def _broll_rules(settings: ClientSettings) -> BrollRules:
+    b = settings.broll
+    return BrollRules(
+        min_start_s=b.min_start_s,
+        min_duration_s=b.min_duration_s,
+        max_duration_s=b.max_duration_s,
+        max_coverage=b.max_coverage,
+        min_gap_s=b.min_gap_s,
+    )
+
+
+def _placements(ctx: StepContext, *statuses: PlacementStatus) -> list[BrollPlacement]:
+    stmt = select(BrollPlacement).where(BrollPlacement.version_id == ctx.version.id)
+    if statuses:
+        stmt = stmt.where(BrollPlacement.status.in_(statuses))
+    return list(ctx.session.scalars(stmt.order_by(BrollPlacement.number)))
+
+
+def step_broll_plan(ctx: StepContext) -> None:
+    """6.3: LLM suggests spots, the rules decide. Later versions keep their (edited) spots."""
+    if not ctx.settings.broll.enabled:
+        ctx.metrics["skipped"] = "disabled"
+        return
+    if ctx.version.parent_id is not None:
+        ctx.metrics.update(reused=True, placements=len(_placements(ctx)))
+        return
+    llm = ctx.providers.llm()
+    if llm is None:
+        ctx.metrics["skipped"] = "no_llm"
+        return
+    transcript = _transcript(ctx)
+    timeline, _, segments, state = _structure(ctx, transcript)
+    prompt = load_prompt(
+        "broll_plan",
+        max=str(planner.MAX_SUGGESTIONS),
+        transcript=vocab.transcript_lines(segments, transcript.words, state.overlay),
+    )
+    used_before = len(llm.usage)
+    try:
+        response = llm.structured("broll_plan", prompt, BrollPlanResponse)
+    except LLMError as exc:
+        log.warning("broll_plan_failed", extra={"error": str(exc)})
+        ctx.metrics["skipped"] = "llm_error"
+        return
+    spots = planner.validate(response.suggestions, timeline.kept_word_ids(transcript.words))
+    chosen = planner.place(spots, transcript.words, timeline, _broll_rules(ctx.settings))
+    ctx.session.execute(delete(BrollPlacement).where(BrollPlacement.version_id == ctx.version.id))
+    for number, (spot, _) in enumerate(chosen, start=1):
+        ctx.session.add(
+            BrollPlacement(
+                version_id=ctx.version.id,
+                number=number,
+                first_word=spot.first_word,
+                last_word=spot.last_word,
+                kind=spot.kind,
+                idea=spot.idea,
+                query=spot.query,
+                card_text=spot.card_text,
+                priority=spot.priority,
+                status=PlacementStatus.PLANNED,
+            )
+        )
+    # All valid suggestions, so a coverage change can pick more or fewer without a new LLM call.
+    ctx.version.edits = {
+        **ctx.version.edits,
+        "broll_candidates": [s.model_dump(mode="json") for s in spots],
+    }
+    calls = llm.usage[used_before:]
+    ctx.metrics.update(
+        suggested=len(response.suggestions),
+        valid=len(spots),
+        placed=len(chosen),
+        llm_input_tokens=sum(u.input_tokens for u in calls),
+        llm_output_tokens=sum(u.output_tokens for u in calls),
+    )
+
+
+def _upsert_asset(
+    ctx: StepContext, source: BrollSource, source_id: str, **fields: Any
+) -> BrollAsset:
+    asset = ctx.session.scalar(
+        select(BrollAsset).where(BrollAsset.source == source, BrollAsset.source_id == source_id)
+    )
+    if asset is None:
+        asset = BrollAsset(source=source, source_id=source_id, **fields)
+        ctx.session.add(asset)
+        ctx.session.flush()
+    return asset
+
+
+def _words_text(transcript: Transcript, overlay: dict[int, str], first: int, last: int) -> str:
+    return " ".join(
+        display_text(w, overlay) for w in transcript.words if first <= w.id <= last
+    ).strip()
+
+
+def step_broll_fetch(ctx: StepContext) -> None:
+    """6.5-6.7: an asset for every planned spot: text card, or a checked stock clip."""
+    if not ctx.settings.broll.enabled:
+        ctx.metrics["skipped"] = "disabled"
+        return
+    rules = _broll_rules(ctx.settings)
+    planned = _placements(ctx, PlacementStatus.PLANNED)
+    transcript = _transcript(ctx)
+    state = version_state(ctx.version)
+    llm = ctx.providers.llm()
+    stock = ctx.providers.stock()
+    used_before = len(llm.usage) if llm else 0
+    counts: Counter[str] = Counter()
+    for placement in planned:
+        if placement.kind == "textcard" and placement.card_text:
+            video = textcards.render_textcard(
+                placement.card_text,
+                ctx.app.data_dir / "cache" / "textcards",
+                rules.max_duration_s,
+                textcards.template_path(ctx.app.templates_dir),
+                ctx.app.fonts_dir,
+                accent_color=ctx.settings.publish.cover_accent_color,
+            )
+            card = _upsert_asset(
+                ctx, BrollSource.TEXTCARD, video.stem, media_type="video", path=ctx.rel(video),
+                width=1080, height=1920, duration_s=rules.max_duration_s,
+                description=placement.card_text,
+            )  # fmt: skip
+            placement.asset_id, placement.status = card.id, PlacementStatus.READY
+            counts["textcard"] += 1
+            continue
+        context = _words_text(transcript, state.overlay, placement.first_word, placement.last_word)
+        asset, score, reason = _find_stock(ctx, placement, context, rules, llm, stock)
+        if asset is None:
+            placement.status, placement.reason = PlacementStatus.SKIPPED, reason
+            counts[f"skipped_{reason}"] += 1
+        else:
+            placement.asset_id, placement.score = asset.id, score
+            placement.status = PlacementStatus.READY
+            counts["stock"] += 1
+    calls = llm.usage[used_before:] if llm else []
+    ctx.metrics.update(
+        **counts,
+        llm_input_tokens=sum(u.input_tokens for u in calls),
+        llm_output_tokens=sum(u.output_tokens for u in calls),
+    )
+
+
+STOCK_HITS_CHECKED = 3  # few downloads per spot (Pixabay: no systematic mass downloads)
+
+
+def _find_stock(
+    ctx: StepContext,
+    placement: BrollPlacement,
+    context: str,
+    rules: BrollRules,
+    llm: LLMProvider | None,
+    stock: PixabayClient | None,
+) -> tuple[BrollAsset | None, float | None, str]:
+    """First stock clip whose preview passes the vision check; else (None, None, reason)."""
+    if stock is None:
+        return None, None, "no_stock_key"
+    if llm is None:
+        return None, None, "no_check"
+    try:
+        hits = stock.search(placement.query or placement.idea, rules.max_duration_s)
+    except StockUnavailableError as exc:
+        log.warning("stock_unavailable", extra={"error": str(exc)})
+        return None, None, "stock_unavailable"
+    for hit in hits[:STOCK_HITS_CHECKED]:
+        try:
+            thumb = stock.download_thumbnail(hit)
+            if thumb is None:
+                continue
+            score = check_image(llm, thumb, placement.idea, context)
+            if score < ctx.settings.broll.min_score:
+                continue
+            video = stock.download_video(hit)
+        except StockUnavailableError as exc:
+            log.warning("stock_download_failed", extra={"error": str(exc)})
+            continue
+        asset = _upsert_asset(
+            ctx, BrollSource.PIXABAY, str(hit.id), source_url=hit.page_url, media_type="video",
+            path=ctx.rel(video), thumbnail=ctx.rel(thumb), width=hit.width, height=hit.height,
+            duration_s=hit.duration, description=hit.tags, meta=PixabayClient.meta(hit),
+        )  # fmt: skip
+        return asset, float(score), ""
+    return None, None, "no_match"
+
+
+def _overlays(ctx: StepContext) -> list[Overlay]:
+    """Ready placements on the current output timeline, rules applied again (a correction
+    may have cut words: their B-roll disappears)."""
+    if not ctx.settings.broll.enabled:
+        return []
+    ready = [p for p in _placements(ctx, PlacementStatus.READY) if p.asset_id is not None]
+    if not ready:
+        return []
+    transcript = _transcript(ctx)
+    timeline = Timeline(_plan(ctx).keep)
+    candidates = []
+    for p in ready:
+        span = word_span(transcript.words, p.first_word, p.last_word, timeline)
+        if span is not None:
+            candidates.append(Candidate(key=p.id, start=span[0], end=span[1], priority=p.priority))
+    by_id = {p.id: p for p in ready}
+    overlays = []
+    for slot in select_slots(candidates, timeline.duration, _broll_rules(ctx.settings)):
+        asset = ctx.session.get(BrollAsset, by_id[slot.key].asset_id)
+        if asset is None or asset.path is None:
+            continue
+        overlays.append(
+            Overlay(ctx.path(asset.path), slot.start, slot.end, still=asset.media_type == "image")
+        )
+    return overlays
+
+
 def step_subtitles(ctx: StepContext) -> None:
     transcript = _transcript(ctx)
     timeline, spans, _, state = _structure(ctx, transcript)
@@ -931,6 +1176,15 @@ def create_next_version(
     )
     session.add(version)
     session.flush()
+    for p in session.scalars(select(BrollPlacement).where(BrollPlacement.version_id == base.id)):
+        session.add(
+            BrollPlacement(
+                version_id=version.id, number=p.number, first_word=p.first_word,
+                last_word=p.last_word, kind=p.kind, idea=p.idea, query=p.query,
+                card_text=p.card_text, priority=p.priority, asset_id=p.asset_id, score=p.score,
+                status=p.status, reason=p.reason,
+            )
+        )  # fmt: skip
     queue.enqueue(session, version.id, from_step)
     project = session.get(Project, base.project_id)
     assert project is not None
@@ -940,6 +1194,7 @@ def create_next_version(
 
 def step_render(ctx: StepContext) -> None:
     vpaths = ctx.paths.version(ctx.version.number)
+    overlays = _overlays(ctx)
     export = steps.render_step(
         _original(ctx),
         _probe(ctx),
@@ -949,7 +1204,9 @@ def step_render(ctx: StepContext) -> None:
         vpaths.export,
         ctx.app.fonts_dir,
         ctx.app.render_preset,
+        overlays,
     )
+    ctx.metrics["broll"] = len(overlays)
     rel = ctx.rel(export)
     ctx.session.execute(
         delete(Asset).where(Asset.version_id == ctx.version.id, Asset.kind == AssetKind.EXPORT)
@@ -980,6 +1237,8 @@ STEPS: dict[str, Callable[[StepContext], None]] = {
     "cutplan": step_cutplan,
     "segments": step_segments,
     "highlights": step_highlights,
+    "broll_plan": step_broll_plan,
+    "broll_fetch": step_broll_fetch,
     "subtitles": step_subtitles,
     "render": step_render,
 }

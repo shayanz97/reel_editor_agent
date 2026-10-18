@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     openai_model_vision: str | None = None
     openai_model_embed: str | None = None
 
-    pexels_api_key: SecretStr | None = None
+    pixabay_api_key: SecretStr | None = None
+    # Dimension of OPENAI_MODEL_EMBED vectors; must match the broll_assets.embedding column.
+    openai_embed_dim: int = 1536
 
     data_dir: Path = Path("data")
     fonts_dir: Path = Path("assets/fonts")

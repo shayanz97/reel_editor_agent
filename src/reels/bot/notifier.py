@@ -228,7 +228,7 @@ class Notifier:
             supports_streaming=True,
             request_timeout=FILE_TIMEOUT_S,
         )
-        messages = texts.preview_messages(n.segments, n.removed)
+        messages = texts.preview_messages(n.segments, n.removed, broll=n.broll)
         for text in messages[:-1]:
             await self.bot.send_message(n.chat_id, text)
         last = await self.bot.send_message(

@@ -100,3 +100,39 @@ def test_subtitles_are_burned_in(tmp_path: Path) -> None:
     assert changed > 2000, "no subtitle pixels found"
     unchanged = sum(abs(x - y) > 40 for x, y in zip(after_a, after_b, strict=True))
     assert unchanged < 200, "subtitle visible after its end time"
+
+
+def test_broll_overlay_below_subtitles(tmp_path: Path) -> None:
+    import cv2
+    import numpy as np
+
+    from reels.media.render import Overlay
+
+    spec = make_video(tmp_path / "src.mp4", "portrait", size=(360, 640))
+    src = probe(Path(spec.path))
+    red = tmp_path / "red.png"
+    cv2.imwrite(str(red), np.full((1920, 1080, 3), (0, 0, 255), np.uint8))
+    events = [
+        SubtitleEvent(start=0.0, end=2.4, words=[SubWord(word_id=0, text="OBEN", start=0, end=2.4)])
+    ]
+    ass = write_ass(tmp_path / "subs.ass", events, style_from_settings(SubtitleSettings()))
+    out = render(
+        Path(spec.path), tmp_path / "out.mp4", KEEP, src,
+        RenderOptions(preset="ultrafast", zoom_on_cuts=False), ass, FONTS,
+        overlays=[Overlay(red, start=1.0, end=2.0, still=True)],
+    )  # fmt: skip
+
+    def frame(t: float):  # type: ignore[no-untyped-def]
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(out), "-frames:v", "1",
+             "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+            check=True, capture_output=True,
+        ).stdout  # fmt: skip
+        return np.frombuffer(raw, np.uint8).reshape(1920, 1080, 3)
+
+    during, before = frame(1.5), frame(0.5)
+    assert tuple(int(c) for c in during[200, 540]) == pytest.approx((0, 0, 255), abs=30)  # B-roll
+    assert abs(int(before[200, 540][2]) - 255) > 30 or int(before[200, 540][1]) > 60  # speaker
+    # Subtitle text (white) is drawn on top of the red B-roll in the lower third.
+    region = during[1300:1440, 200:880]
+    assert (region.min(axis=2) > 200).sum() > 500

@@ -7,9 +7,11 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiogram>=3.31.0",
     "alembic>=1.13",
+    "httpx>=0.28.1",
     "numpy>=2.5.4",
     "openai>=3.31.0",
     "opencv-python-headless>=4.10,<5",
+    "pgvector>=0.5.1",
     "playwright>=1.64.0",
     "psycopg[binary]>=3.2",
     "pydantic>=2.7",
@@ -88,7 +90,7 @@ implicit_reexport = false
 
 # Third-party packages without type information.
 [[tool.mypy.overrides]]
-module = ["whisperx", "mlx_whisper", "silero_vad"]
+module = ["whisperx", "mlx_whisper", "silero_vad", "pgvector", "pgvector.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
